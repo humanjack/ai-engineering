@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Deep Agents — LangChain's Opinionated Agent Harness</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="_shared.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="wrap">
+    <div class="brand"><span class="brand-dot"></span> AI Agent Architecture Series</div>
+    <nav>
+      <a href="index.html">Index</a>
+      <a href="pi.html">Pi</a>
+      <a href="openclaw.html">OpenClaw</a>
+      <a href="hermes.html">Hermes</a>
+      <a href="opencode.html">OpenCode</a>
+      <a href="deepagents.html">Deep Agents</a>
+      <a href="codex.html">Codex</a>
+      <a href="comparison.html">Compare</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <h1 class="hero">Deep Agents <span style="color:var(--muted);font-weight:400">— LangChain's opinionated agent harness</span></h1>
+  <p class="hero-sub">Batteries-included agent in two lines. Middleware stack with planning, filesystem, sub-agents, summarization, and Anthropic prompt caching built in.</p>
+  <div class="hero-meta">
+    <span class="chip"><strong>Language</strong> Python ≥3.11</span>
+    <span class="chip"><strong>License</strong> MIT</span>
+    <span class="chip"><strong>Default model</strong> Claude Sonnet 4.6</span>
+    <span class="chip"><a href="https://github.com/langchain-ai/deepagents">↗ langchain-ai/deepagents</a></span>
+  </div>
+
+  <section>
+    <h2>TL;DR</h2>
+    <div class="tldr">
+      <div class="card"><b>Middleware stack, not a monolith.</b> Every capability — planning, filesystem, sub-agents, summarization, memory, skills — is a middleware. You compose your agent by choosing middleware.</div>
+      <div class="card"><b>Built on LangGraph primitives.</b> Streaming, checkpointing, persistence, and the <code>Command</code> pattern for atomic state updates come free.</div>
+      <div class="card"><b>Batteries included.</b> <code>create_deep_agent()</code> with zero args returns a working agent that plans, reads/writes files, spawns sub-agents, and auto-compacts.</div>
+    </div>
+    <p class="callout">Analogy: Pi gives you Lego bricks. Deep Agents gives you the Death Star kit. Both can build the same thing — Deep Agents just shipped most of it pre-assembled.</p>
+  </section>
+
+  <section>
+    <h2>1 · Two-line quickstart</h2>
+<pre><code>from deepagents import create_deep_agent
+agent = create_deep_agent()
+result = agent.invoke({
+    "messages": [{"role": "user", "content": "Research X and save a report"}]
+})</code></pre>
+    <p>That agent already has: planning (<code>write_todos</code>), filesystem (<code>read_file</code>, <code>write_file</code>, <code>edit_file</code>, <code>ls</code>, <code>glob</code>, <code>grep</code>), shell (<code>execute</code>), sub-agents (<code>task</code>), auto-summarization, Anthropic prompt caching, and <code>AGENTS.md</code> memory loading.</p>
+  </section>
+
+  <section>
+    <h2>2 · Layered Stack</h2>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TB
+    subgraph App["create_deep_agent()"]
+        Cfg[Config & defaults]
+        Sub[Sub-agent factory]
+        MW[Middleware composer]
+    end
+    subgraph LC["LangChain create_agent()"]
+        Builder[Graph builder]
+        ToolReg[Tool registry]
+        Inject[init_chat_model]
+    end
+    subgraph LG["LangGraph runtime"]
+        SG[StateGraph]
+        Model[model_node]
+        Tool[tool_node]
+        Ckpt[Checkpointer]
+        Store[BaseStore]
+    end
+    subgraph Backend["BackendProtocol"]
+        State[StateBackend]
+        FS[FilesystemBackend]
+        Shell[LocalShellBackend]
+        Remote[Runloop / Daytona / Modal]
+    end
+    App --> LC --> LG
+    LG -.uses.-> Backend
+    Tool -.commands.-> SG
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>3 · The Middleware Stack</h2>
+    <p>Deep Agents is a <b>stack of middleware</b> in this default order:</p>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TD
+    M1[1 · TodoListMiddleware<br/>write_todos]
+    M2[2 · MemoryMiddleware*<br/>AGENTS.md → system prompt]
+    M3[3 · SkillsMiddleware*<br/>SKILL.md metadata]
+    M4[4 · FilesystemMiddleware<br/>ls/read/write/edit/glob/grep/execute]
+    M5[5 · SubAgentMiddleware<br/>task tool]
+    M6[6 · SummarizationMiddleware<br/>auto-compact + compact_conversation]
+    M7[7 · AnthropicPromptCachingMiddleware<br/>content-block caching]
+    M8[8 · PatchToolCallsMiddleware<br/>fix dangling tool calls]
+    M9[9 · User middleware*]
+    M10[10 · HumanInTheLoopMiddleware*<br/>approval flows]
+    M1 --> M2 --> M3 --> M4 --> M5 --> M6 --> M7 --> M8 --> M9 --> M10
+      </div>
+    </div>
+
+    <div class="tabs">
+      <button data-tab="before" class="active">before_agent</button>
+      <button data-tab="model">wrap_model_call</button>
+      <button data-tab="tool">wrap_tool_call</button>
+    </div>
+    <div class="tab-panel active" data-tab="before">
+      <p><b>Fires:</b> once at agent start &middot; <b>Used for:</b> load memory, load skills, patch dangling tool calls, prime state</p>
+    </div>
+    <div class="tab-panel" data-tab="model">
+      <p><b>Fires:</b> every model call &middot; <b>Used for:</b> inject system-prompt sections, modify messages, trigger summarization, structure prompt caching blocks</p>
+    </div>
+    <div class="tab-panel" data-tab="tool">
+      <p><b>Fires:</b> every tool call &middot; <b>Used for:</b> evict large results to filesystem, log, guard, human-in-the-loop approval</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>4 · A Request's Journey</h2>
+    <div class="diagram">
+      <div class="mermaid">
+sequenceDiagram
+    participant U as User
+    participant DA as create_deep_agent
+    participant MW as Middleware Stack
+    participant M as Model (Claude)
+    participant T as Tool
+    participant BE as Backend
+    U->>DA: invoke({messages: [...]})
+    DA->>MW: before_agent hooks
+    MW->>MW: MemoryMiddleware loads AGENTS.md
+    MW->>MW: SkillsMiddleware loads SKILL.md metadata
+    loop until no tool calls
+        MW->>M: wrap_model_call
+        Note over MW: SummarizationMW: compact if >85% context<br/>AnthropicCachingMW: stable prefix blocks
+        M-->>MW: assistant + toolCall
+        MW->>T: wrap_tool_call
+        T->>BE: state update via Command
+        T-->>MW: ToolMessage
+        Note over MW: If result > 20k tokens:<br/>evict to /large_tool_results/
+    end
+    MW-->>U: final state (messages + files + todos)
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>5 · Context Engineering — 5 Coordinated Techniques</h2>
+    <div class="cards">
+      <div class="card"><h4>🧱 Stacked system prompt</h4><p>Each middleware appends a content block. Stable prefix blocks get prompt-cached on Anthropic (~80% cost drop on long sessions).</p></div>
+      <div class="card"><h4>📦 Auto-summarization</h4><p>At 85% of <code>max_input_tokens</code>: offload old messages to <code>/conversation_history/</code>, replace with LLM-generated summary, keep last 10%.</p></div>
+      <div class="card"><h4>✂️ Tool-arg truncation</h4><p>Older <code>write_file</code> / <code>edit_file</code> args get truncated to "first 20 chars + …".</p></div>
+      <div class="card"><h4>📁 Large result eviction</h4><p>Results > 20k tokens get evicted to <code>/large_tool_results/</code>; inline is replaced by head/tail preview + file ref.</p></div>
+      <div class="card"><h4>🔎 Progressive skill disclosure</h4><p>Only skill name + description + path in system prompt. Full <code>SKILL.md</code> loaded on-demand.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>6 · Sub-agents</h2>
+    <p>The <code>task</code> tool spawns ephemeral, isolated sub-agents — a key context-pollution defense.</p>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart LR
+    Main[Main agent<br/>full history] -- task --> Sub[Sub-agent<br/>empty history + only the task]
+    Sub -- tools --> SubTools[Read/Write/etc.]
+    Sub -- final message --> Main
+    Sub -. ephemeral .- Disc[discarded]
+      </div>
+    </div>
+    <ul>
+      <li>Context isolation — sub-agent only sees its task description</li>
+      <li>Parallel — multiple <code>task</code> calls in one assistant turn run concurrently</li>
+      <li>Inherits middleware (TodoList, Filesystem, Summarization, PromptCaching, PatchToolCalls)</li>
+      <li>Custom personas — set per-agent model, tools, system_prompt</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>7 · Backend Abstraction</h2>
+    <table class="matrix">
+      <thead><tr><th>Backend</th><th>Storage</th><th>Execution</th><th>Use Case</th></tr></thead>
+      <tbody>
+        <tr><td>StateBackend</td><td>LangGraph state (ephemeral)</td><td class="no">✗</td><td>Default, tests</td></tr>
+        <tr><td>FilesystemBackend</td><td>Local disk</td><td class="no">✗</td><td>Local persistent files</td></tr>
+        <tr><td>LocalShellBackend</td><td>Local disk</td><td class="yes">✓ local</td><td>Development</td></tr>
+        <tr><td>StoreBackend</td><td>LangGraph BaseStore</td><td class="no">✗</td><td>Cross-session memory</td></tr>
+        <tr><td>CompositeBackend</td><td>Path-routed</td><td class="partial">mixed</td><td>Hybrid memories + ephemeral</td></tr>
+        <tr><td>Runloop / Daytona / Modal</td><td>Remote</td><td class="yes">✓ sandboxed</td><td>Production</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>8 · Testing & Evaluation</h2>
+    <p>Deep Agents ships a sister package — <b>harbor</b> — for benchmarking. Real eval harness used by LangChain to A/B middleware tweaks. Internal tests cover middleware ordering, summarization triggers, sub-agent isolation, prompt caching segmentation.</p>
+  </section>
+
+  <section>
+    <h2>9 · Strengths & Tradeoffs</h2>
+    <div class="cards">
+      <div class="card">
+        <div class="icon">💪</div>
+        <h4>Strengths</h4>
+        <ul>
+          <li>Best-in-class context management</li>
+          <li>Composable via middleware</li>
+          <li>LangGraph persistence + streaming + checkpointing</li>
+          <li>Real eval harness (<code>harbor</code>)</li>
+          <li>Drop-in agent in 2 lines</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="icon">⚖️</div>
+        <h4>Tradeoffs</h4>
+        <ul>
+          <li>LangChain/LangGraph dependency surface</li>
+          <li>Middleware ordering matters and isn't obvious</li>
+          <li>Python-first</li>
+          <li>Heavier abstraction than Pi</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>10 · Further Reading</h2>
+    <ul>
+      <li><a href="https://github.com/langchain-ai/deepagents">langchain-ai/deepagents</a></li>
+      <li><a href="https://langchain-ai.github.io/langgraph/">LangGraph docs</a></li>
+      <li><a href="comparison.html">Cross-agent comparison →</a></li>
+    </ul>
+  </section>
+</main>
+<footer class="site-footer">
+  AI Agent Architecture Series · Educational deep-dive · <a href="https://github.com/humanjack/ai-engineering">repo</a>
+</footer>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script src="_shared.js"></script>
+</body>
+</html>

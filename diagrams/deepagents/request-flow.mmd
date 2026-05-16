@@ -1,0 +1,19 @@
+sequenceDiagram
+    participant U as User
+    participant DA as create_deep_agent
+    participant MW as Middleware Stack
+    participant M as Model (Claude)
+    participant T as Tool
+    participant BE as Backend
+    U->>DA: invoke({messages: [...]})
+    DA->>MW: before_agent hooks
+    MW->>MW: MemoryMiddleware loads AGENTS.md
+    MW->>MW: SkillsMiddleware loads SKILL.md metadata
+    loop until no tool calls
+        MW->>M: wrap_model_call
+        M-->>MW: assistant + toolCall
+        MW->>T: wrap_tool_call
+        T->>BE: state update via Command
+        T-->>MW: ToolMessage
+    end
+    MW-->>U: final state (messages + files + todos)

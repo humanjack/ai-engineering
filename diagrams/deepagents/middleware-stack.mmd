@@ -1,0 +1,12 @@
+flowchart TD
+    M1[1 · TodoListMiddleware<br/>write_todos]
+    M2[2 · MemoryMiddleware*<br/>AGENTS.md → system prompt]
+    M3[3 · SkillsMiddleware*<br/>SKILL.md metadata]
+    M4[4 · FilesystemMiddleware<br/>ls/read/write/edit/glob/grep/execute]
+    M5[5 · SubAgentMiddleware<br/>task tool]
+    M6[6 · SummarizationMiddleware<br/>auto-compact + compact_conversation]
+    M7[7 · AnthropicPromptCachingMiddleware<br/>content-block caching]
+    M8[8 · PatchToolCallsMiddleware<br/>fix dangling tool calls]
+    M9[9 · User middleware*]
+    M10[10 · HumanInTheLoopMiddleware*<br/>approval flows]
+    M1 --> M2 --> M3 --> M4 --> M5 --> M6 --> M7 --> M8 --> M9 --> M10

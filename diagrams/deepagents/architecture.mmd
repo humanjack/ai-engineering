@@ -1,0 +1,27 @@
+flowchart TB
+    subgraph App["create_deep_agent()"]
+        Cfg[Config & defaults]
+        Sub[Sub-agent factory]
+        MW[Middleware composer]
+    end
+    subgraph LC["LangChain create_agent()"]
+        Builder[Graph builder]
+        ToolReg[Tool registry]
+        Inject[init_chat_model]
+    end
+    subgraph LG["LangGraph runtime"]
+        SG[StateGraph]
+        Model[model_node]
+        Tool[tool_node]
+        Ckpt[Checkpointer]
+        Store[BaseStore]
+    end
+    subgraph Backend["BackendProtocol"]
+        State[StateBackend]
+        FS[FilesystemBackend]
+        Shell[LocalShellBackend]
+        Remote[Runloop / Daytona / Modal]
+    end
+    App --> LC --> LG
+    LG -.uses.-> Backend
+    Tool -.commands.-> SG
