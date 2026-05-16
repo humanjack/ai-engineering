@@ -1,0 +1,180 @@
+/* Shared styles for AI Agent Architecture series */
+:root {
+  --bg: #0b1020;
+  --panel: #111733;
+  --panel-2: #161e3e;
+  --accent: #7c8cff;
+  --accent-2: #4fd1c5;
+  --accent-3: #f59f0b;
+  --text: #e7ecff;
+  --muted: #9aa4cf;
+  --border: #2a335c;
+  --code-bg: #0a0f25;
+  --good: #34d399;
+  --warn: #fbbf24;
+  --bad: #f87171;
+  --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'SF Mono', Menlo, monospace;
+}
+
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; padding: 0;
+  font-family: var(--font-sans);
+  color: var(--text);
+  background: radial-gradient(ellipse at top, #14204a 0%, var(--bg) 60%);
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+a { color: var(--accent); text-decoration: none; transition: color .15s; }
+a:hover { color: var(--accent-2); text-decoration: underline; }
+
+header.site-header {
+  border-bottom: 1px solid var(--border);
+  background: rgba(11, 16, 32, 0.85);
+  backdrop-filter: blur(8px);
+  position: sticky; top: 0; z-index: 30;
+}
+header.site-header .wrap {
+  max-width: 1080px; margin: 0 auto; padding: 14px 24px;
+  display: flex; align-items: center; gap: 16px;
+}
+header.site-header .brand {
+  font-weight: 700; letter-spacing: -.01em; font-size: 16px;
+  display: flex; align-items: center; gap: 10px;
+}
+header.site-header .brand-dot {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: linear-gradient(45deg, var(--accent), var(--accent-2));
+  box-shadow: 0 0 12px var(--accent);
+}
+header.site-header nav { margin-left: auto; display: flex; gap: 18px; font-size: 14px; }
+header.site-header nav a { color: var(--muted); }
+header.site-header nav a:hover { color: var(--text); }
+
+main { max-width: 1080px; margin: 0 auto; padding: 32px 24px 80px; }
+
+h1.hero {
+  font-size: 44px; line-height: 1.1; margin: 24px 0 8px;
+  letter-spacing: -.02em; font-weight: 800;
+  background: linear-gradient(135deg, var(--text) 0%, var(--accent) 70%, var(--accent-2) 100%);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.hero-sub { color: var(--muted); font-size: 18px; max-width: 720px; margin: 0 0 24px; }
+.hero-meta { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 32px; }
+.hero-meta .chip {
+  background: var(--panel); border: 1px solid var(--border);
+  padding: 6px 12px; border-radius: 999px; font-size: 13px;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.hero-meta .chip strong { color: var(--accent-2); font-weight: 600; }
+
+section { margin: 40px 0; }
+h2 {
+  font-size: 24px; margin: 0 0 12px;
+  border-left: 3px solid var(--accent);
+  padding-left: 12px; letter-spacing: -.01em;
+}
+h3 { font-size: 18px; margin: 24px 0 8px; color: var(--accent-2); }
+p { line-height: 1.65; color: #d6dcfb; }
+ul, ol { line-height: 1.65; color: #d6dcfb; }
+
+.tldr { display: grid; gap: 10px; margin: 24px 0; }
+.tldr .card {
+  background: linear-gradient(180deg, var(--panel-2), var(--panel));
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--accent);
+  padding: 14px 18px; border-radius: 8px;
+}
+.tldr .card b { color: var(--accent-2); }
+
+.callout {
+  background: rgba(124, 140, 255, 0.08);
+  border-left: 3px solid var(--accent);
+  padding: 12px 16px; border-radius: 6px;
+  font-style: italic; color: var(--text);
+}
+
+.diagram {
+  background: #f7fafc; border-radius: 12px; padding: 20px;
+  margin: 16px 0; overflow: auto;
+}
+.diagram .mermaid { display: flex; justify-content: center; min-height: 100px; }
+.diagram-caption { color: var(--muted); font-size: 13px; text-align: center; margin-top: 6px; }
+
+pre, code { font-family: var(--font-mono); font-size: 13px; }
+pre {
+  background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
+  padding: 14px 16px; overflow-x: auto; line-height: 1.5;
+}
+code:not(pre code) {
+  background: rgba(124, 140, 255, 0.12);
+  border: 1px solid var(--border);
+  padding: 1px 6px; border-radius: 4px; font-size: 12px;
+}
+pre code { background: transparent; border: 0; padding: 0; }
+
+table {
+  width: 100%; border-collapse: collapse;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 8px; overflow: hidden;
+  font-size: 14px;
+}
+th, td { padding: 10px 14px; text-align: left; border-bottom: 1px solid var(--border); }
+th { background: var(--panel-2); color: var(--accent-2); font-weight: 600; }
+tr:last-child td { border-bottom: 0; }
+
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin: 16px 0 0; }
+.tabs button {
+  background: transparent; border: 0; color: var(--muted); padding: 10px 16px;
+  cursor: pointer; font-size: 14px; font-weight: 500;
+  border-bottom: 2px solid transparent; transition: all .15s;
+}
+.tabs button:hover { color: var(--text); }
+.tabs button.active { color: var(--accent-2); border-bottom-color: var(--accent-2); }
+.tab-panel { display: none; padding: 16px 0; }
+.tab-panel.active { display: block; }
+
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+.card {
+  background: linear-gradient(180deg, var(--panel-2), var(--panel));
+  border: 1px solid var(--border); border-radius: 12px; padding: 18px;
+  transition: transform .15s, border-color .15s;
+}
+.card:hover { transform: translateY(-2px); border-color: var(--accent); }
+.card h4 { margin: 0 0 8px; font-size: 16px; color: var(--text); }
+.card .icon { font-size: 24px; margin-bottom: 8px; }
+.card .badges { display: flex; gap: 6px; margin: 8px 0; }
+.card .badge {
+  font-size: 11px; padding: 2px 8px; border-radius: 999px;
+  background: rgba(79, 209, 197, 0.15); color: var(--accent-2);
+  border: 1px solid rgba(79, 209, 197, 0.3);
+}
+.card p { font-size: 14px; color: var(--muted); margin: 8px 0 0; }
+
+.matrix th:first-child, .matrix td:first-child { font-weight: 600; }
+.matrix td .yes { color: var(--good); }
+.matrix td .no { color: var(--bad); }
+.matrix td .partial { color: var(--warn); }
+
+footer.site-footer {
+  text-align: center; color: var(--muted); font-size: 13px;
+  border-top: 1px solid var(--border); padding: 24px;
+  margin-top: 60px;
+}
+
+.code-ref {
+  font-family: var(--font-mono); font-size: 12px;
+  color: var(--accent-2);
+  background: rgba(79, 209, 197, 0.08);
+  padding: 1px 6px; border-radius: 4px;
+  border: 1px solid rgba(79, 209, 197, 0.25);
+}
+
+@media (max-width: 720px) {
+  h1.hero { font-size: 32px; }
+  main { padding: 24px 16px 60px; }
+  header.site-header nav { display: none; }
+}

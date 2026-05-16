@@ -1,0 +1,25 @@
+sequenceDiagram
+    participant U as User
+    participant CA as coding-agent (TUI)
+    participant AC as agent-core
+    participant AI as pi-ai
+    participant LLM as Anthropic
+    participant FS as Filesystem
+    U->>CA: "Fix the port in config.json"
+    CA->>AC: agentLoop([userMsg], ctx, cfg)
+    AC->>AC: transformContext (compaction if needed)
+    AC->>AC: convertToLlm (drop custom msg types)
+    AC->>AI: streamSimple(model, llmContext)
+    AI->>LLM: POST /messages (stream)
+    LLM-->>AI: text + toolCall("Read", "config.json")
+    AI-->>AC: AssistantMessage
+    AC->>FS: read config.json
+    FS-->>AC: { "port": 3000 }
+    AC->>AI: streamSimple(updated llmContext)
+    LLM-->>AC: toolCall("Edit", port: 3000→8080)
+    AC->>FS: write config.json
+    FS-->>AC: ok
+    AC->>AI: streamSimple
+    LLM-->>AC: "Done — port is now 8080"
+    AC->>CA: agent_end event
+    CA->>U: render final message
