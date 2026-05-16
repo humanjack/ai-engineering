@@ -1,0 +1,25 @@
+sequenceDiagram
+    participant WA as WhatsApp
+    participant CH as Channel plugin
+    participant GW as Gateway
+    participant H1 as Internal hooks
+    participant PE as Pi-embedded runner
+    participant H2 as Plugin hooks
+    participant Pi as Pi runLoop
+    participant T as Tool (sandbox)
+    WA->>CH: "Find PDFs of receipts I sent last week"
+    CH->>GW: message:received
+    GW->>H1: fire message:received hooks
+    H1-->>GW: ok (or block)
+    GW->>PE: route to session
+    PE->>H2: before_prompt_build, before_agent_start
+    PE->>Pi: createAgentSession({customTools, sessionManager})
+    Pi-->>PE: toolCall(read receipts dir)
+    PE->>H2: before_tool_call
+    H2->>T: execute (Docker sandbox if non-main)
+    T-->>H2: result
+    PE->>Pi: continue
+    Pi-->>PE: assistant "Found 3 receipts: ..."
+    PE-->>GW: message:sending
+    GW-->>CH: deliver
+    CH-->>WA: WhatsApp message

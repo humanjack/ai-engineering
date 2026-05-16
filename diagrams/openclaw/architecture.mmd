@@ -1,0 +1,38 @@
+flowchart TB
+    subgraph Clients["Clients"]
+        CLI[openclaw CLI / TUI]
+        Menu[macOS menu bar]
+        Mobile[iOS / Android Nodes]
+        Web[Web UI]
+    end
+    subgraph Gateway["Gateway (single daemon per host)"]
+        WS[WebSocket control plane]
+        Inbox[Multi-channel inbox]
+        Ctx[Context Engine plugin]
+        SessionMgr[SessionManager guarded]
+        Cron[Cron scheduler]
+        Hooks[Hooks - internal + plugin]
+        MCP[MCP server / client]
+        Sandbox[Docker / SSH / OpenShell]
+    end
+    subgraph PiEmbedded["Embedded Pi runtime"]
+        AgentSess[pi-coding-agent createAgentSession]
+        AgentLoop[Pi runLoop]
+        Tools[Custom tools + Pi codingTools]
+    end
+    subgraph Channels["Channels (22+)"]
+        WA[WhatsApp]
+        TG[Telegram]
+        Disc[Discord]
+        Slack[Slack]
+        iMsg[iMessage]
+        Etc[+17 more]
+    end
+    Clients --> WS
+    Channels --> Inbox
+    Inbox --> SessionMgr
+    SessionMgr --> AgentSess
+    AgentSess --> AgentLoop
+    AgentLoop --> Tools
+    Tools -.may use.-> Sandbox
+    Hooks -.fires around.-> AgentLoop
