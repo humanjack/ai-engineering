@@ -1,0 +1,9 @@
+flowchart TB
+    Cmd[shell command]
+    Helper[codex-linux-sandbox<br/>helper binary]
+    Bwrap[bubblewrap mounts<br/>ro / + rw roots<br/>+ mask .git/.codex/AGENTS.md]
+    Seccomp[seccomp filter<br/>Restricted or ProxyRouted]
+    NNP[PR_SET_NO_NEW_PRIVS]
+    Land[Landlock FS rules fallback]
+    Child[child process]
+    Cmd --> Helper --> Bwrap --> Seccomp --> NNP --> Land --> Child

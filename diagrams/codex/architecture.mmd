@@ -1,0 +1,40 @@
+flowchart TB
+    subgraph Frontends["5 frontends, 1 protocol"]
+        TUI[tui — ratatui terminal UI]
+        Exec[exec — headless one-shot]
+        App[app-server — JSON-RPC for IDE/desktop]
+        McpS[mcp-server — Codex as MCP tool]
+        IDE[IDE plugin]
+    end
+    subgraph Core["core/ — agent core"]
+        Sub[submission_loop handlers.rs:733]
+        Turn[run_turn turn.rs:141]
+        Tools[ToolCallRuntime]
+        Agents[AGENTS.md manager]
+        Skills[SkillsManager]
+        Compact[3 compaction modes]
+    end
+    subgraph Tools_["Tool handlers"]
+        Shell[shell / local_shell]
+        Exec_[exec_command + write_stdin]
+        Patch[apply_patch]
+        Plan[update_plan]
+        Mcp[mcp]
+        SubAg[agent_jobs / multi_agents]
+    end
+    subgraph Sandbox["Sandbox crates"]
+        Seat[sandboxing — Seatbelt .sbpl]
+        Linux[linux-sandbox — bwrap+seccomp+Landlock]
+        Win[windows-sandbox-rs — AppContainer]
+        Exec2[execpolicy — Starlark rules]
+    end
+    subgraph Provider["Provider"]
+        Resp[OpenAI Responses API<br/>WS primary, HTTPS fallback]
+        Other[Anthropic / Ollama / Bedrock]
+    end
+    Frontends --> Sub --> Turn --> Tools --> Tools_
+    Tools_ -.shell/patch.-> Sandbox
+    Turn --> Provider
+    Turn --> Agents
+    Turn --> Skills
+    Turn --> Compact

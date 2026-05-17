@@ -1,0 +1,29 @@
+sequenceDiagram
+    participant F as Frontend
+    participant S as submission_loop
+    participant T as Task
+    participant R as run_turn
+    participant Hooks as Hooks engine
+    participant LLM as Provider
+    F->>S: Submission { op: UserTurn }
+    S->>T: spawn Task
+    T->>R: run_turn(...)
+    R->>R: pre-compact if near limit
+    R->>R: resolve skills + plugin mentions + MCP tools
+    R->>Hooks: SessionStart, UserPromptSubmit
+    loop until done
+        R->>R: drain pending input
+        R->>LLM: run_sampling_request
+        LLM-->>R: streamed events
+        alt ContextWindowExceeded
+            R->>R: run_auto_compact mid-turn
+        else needs_follow_up
+            R->>R: continue
+        else done
+            R->>Hooks: Stop, AfterAgent
+            alt Stop hook returns continuation_fragment
+                R->>R: re-enter loop with new user message
+            end
+        end
+    end
+    R-->>F: EventMsg stream
