@@ -1,0 +1,15 @@
+sequenceDiagram
+    participant M as Model
+    participant E as edit tool
+    participant L as LSP client
+    participant S as Language server
+    M->>E: edit(file, old, new)
+    E->>E: apply text replace
+    E->>L: touchFile(filePath, waitForDiagnostics=true)
+    L->>S: publishDiagnostics request
+    Note over L,S: blocks up to 3s
+    S-->>L: diagnostics list
+    L-->>E: diagnostics
+    E->>E: filter severity==1 (errors)
+    E-->>M: tool output<br/>"edit summary\n\nDiagnostics:\n<errors>"
+    Note over M: Model sees errors immediately<br/>and can fix in next step
