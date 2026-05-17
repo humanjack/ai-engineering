@@ -1,0 +1,28 @@
+flowchart TB
+    subgraph UI["User Interfaces"]
+        TUI[coding-agent TUI]
+        Slack[mom — Slack bot]
+        Web[web-ui]
+        OC[OpenClaw — Telegram/Discord/...]
+    end
+    subgraph Core["agent-core — Runtime"]
+        Tree[AgentMessage tree]
+        Loop[agent-loop runLoop]
+        Tools[Tool executor]
+        Events[Event stream]
+        Steer[Steering / follow-up queue]
+    end
+    subgraph Ai["pi-ai — Unified LLM SDK"]
+        Stream[streamSimple / complete]
+        Cost[Token + cost tracking]
+        Ctx[Context serialization]
+    end
+    subgraph LLM["LLM Providers"]
+        Ant[Anthropic]
+        OAI[OpenAI]
+        Goog[Google]
+        Etc[+17 more]
+    end
+    UI --> Core
+    Core --> Ai
+    Ai --> LLM

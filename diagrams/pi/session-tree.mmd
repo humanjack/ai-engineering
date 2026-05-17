@@ -1,0 +1,11 @@
+graph TD
+    M1["msg-1: user — 'Fix login bug'"]
+    M2["msg-2: assistant — tool calls"]
+    M3["msg-3: tool result"]
+    M4["msg-4: assistant — 'Done'"]
+    M5["msg-5: user — 'Also fix logout'"]
+    M6["msg-6: user — '/review' (side-quest)"]
+    M7["msg-7: assistant — review findings"]
+    M1 --> M2 --> M3 --> M4
+    M4 --> M5
+    M4 --> M6 --> M7

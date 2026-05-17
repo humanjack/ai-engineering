@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pi — A Minimal Self-Extending Coding Agent</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="_shared.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="wrap">
+    <div class="brand"><span class="brand-dot"></span> AI Agent Architecture Series</div>
+    <nav>
+      <a href="index.html">Index</a>
+      <a href="pi.html">Pi</a>
+      <a href="openclaw.html">OpenClaw</a>
+      <a href="hermes.html">Hermes</a>
+      <a href="opencode.html">OpenCode</a>
+      <a href="deepagents.html">Deep Agents</a>
+      <a href="codex.html">Codex</a>
+      <a href="comparison.html">Compare</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+  <h1 class="hero">Pi <span style="color:var(--muted);font-weight:400">— A minimal, self-extending coding agent</span></h1>
+  <p class="hero-sub">4 built-in tools. Tree-shaped sessions. The agent writes its own extensions in TypeScript. Powers <a href="https://openclaw.ai">OpenClaw</a>.</p>
+  <div class="hero-meta">
+    <span class="chip"><strong>Language</strong> TypeScript</span>
+    <span class="chip"><strong>License</strong> MIT</span>
+    <span class="chip"><strong>Author</strong> Mario Zechner</span>
+    <span class="chip"><a href="https://github.com/badlogic/pi-mono">↗ badlogic/pi-mono</a></span>
+  </div>
+
+  <section>
+    <h2>TL;DR</h2>
+    <div class="tldr">
+      <div class="card"><b>Minimal core.</b> Only <code>Read</code>, <code>Write</code>, <code>Edit</code>, <code>Bash</code> ship in the box. Everything else is added by the agent writing its own TypeScript extensions at runtime.</div>
+      <div class="card"><b>Sessions are trees.</b> Every message has a <code>parentId</code>. Branch off to fix a tool, do a code review, rewind back to where you were — no context pollution.</div>
+      <div class="card"><b>Provider-agnostic.</b> A single <code>Context</code> object is portable across Anthropic, OpenAI, Google, xAI, Mistral, and 15+ providers — swap models mid-conversation without losing state.</div>
+    </div>
+    <p class="callout">Analogy: Pi is the <i>busybox</i> of coding agents. Tiny core, hot-reloadable plugins, "if you want it to do X, ask it to write X."</p>
+  </section>
+
+  <section>
+    <h2>1 · Why It Exists</h2>
+    <p>Most agents grow by accretion: more tools, more prompts, more middleware, more lock-in. Pi inverts the design. The core does exactly four things; everything else is built by the agent itself (or by the user) as TypeScript extensions. The model — frontier models that already know TS — becomes the runtime's compiler.</p>
+    <p>The slogan: <b>"clay, not concrete."</b> The agent maintains its own functionality.</p>
+  </section>
+
+  <section>
+    <h2>2 · Layered Architecture</h2>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TB
+    subgraph UI["User Interfaces"]
+        TUI[coding-agent TUI]
+        Slack[mom — Slack bot]
+        Web[web-ui]
+        OC[OpenClaw — Telegram/Discord/...]
+    end
+    subgraph Core["agent-core — Runtime"]
+        Tree[AgentMessage tree]
+        Loop[agent-loop runLoop]
+        Tools[Tool executor]
+        Events[Event stream]
+        Steer[Steering / follow-up queue]
+    end
+    subgraph Ai["pi-ai — Unified LLM SDK"]
+        Stream[streamSimple / complete]
+        Cost[Token + cost tracking]
+        Ctx[Context serialization]
+    end
+    subgraph LLM["LLM Providers"]
+        Ant[Anthropic]
+        OAI[OpenAI]
+        Goog[Google]
+        Etc[+17 more]
+    end
+    UI --> Core
+    Core --> Ai
+    Ai --> LLM
+      </div>
+      <div class="diagram-caption">Four layers — UI surfaces talk to the runtime, the runtime talks to pi-ai, pi-ai talks to providers.</div>
+    </div>
+  </section>
+
+  <section>
+    <h2>3 · The Heart: <code>runLoop</code></h2>
+    <p>The entire agent loop is a single function in <a href="https://github.com/badlogic/pi-mono/blob/main/packages/agent/src/agent-loop.ts"><code class="code-ref">packages/agent/src/agent-loop.ts:155</code></a>:</p>
+<pre><code>async function runLoop(currentContext, newMessages, config, signal, emit, streamFn) {
+  while (!signal?.aborted) {
+    // Stream assistant response (line ~193)
+    const message = await streamAssistantResponse(...);
+    const toolCalls = message.content.filter(c => c.type === "toolCall");
+
+    if (toolCalls.length === 0) break;   // No tool calls → done
+    // Execute tools — sequential OR parallel depending on tool.kind (line ~381)
+    await executeToolCalls(...);
+  }
+}</code></pre>
+    <p>That's it. The complexity hides in <i>events</i>, <i>tool execution semantics</i>, and the <i>steering</i> system.</p>
+  </section>
+
+  <section>
+    <h2>4 · A Full Turn Walkthrough</h2>
+    <div class="diagram">
+      <div class="mermaid">
+sequenceDiagram
+    participant U as User
+    participant CA as coding-agent (TUI)
+    participant AC as agent-core
+    participant AI as pi-ai
+    participant LLM as Anthropic
+    participant FS as Filesystem
+    U->>CA: "Fix the port in config.json"
+    CA->>AC: agentLoop([userMsg], ctx, cfg)
+    AC->>AC: transformContext (compaction if needed)
+    AC->>AC: convertToLlm (drop custom msg types)
+    AC->>AI: streamSimple(model, llmContext)
+    AI->>LLM: POST /messages (stream)
+    LLM-->>AI: text + toolCall("Read", "config.json")
+    AI-->>AC: AssistantMessage
+    AC->>FS: read config.json
+    FS-->>AC: { "port": 3000 }
+    AC->>AI: streamSimple(updated llmContext)
+    LLM-->>AC: toolCall("Edit", port: 3000→8080)
+    AC->>FS: write config.json
+    FS-->>AC: ok
+    AC->>AI: streamSimple
+    LLM-->>AC: "Done — port is now 8080"
+    AC->>CA: agent_end event
+    CA->>U: render final message
+      </div>
+    </div>
+    <p>During the streaming + tool-execution phase the user can <b>steer</b> (interrupt with a new instruction) or <b>queue follow-ups</b>. Both are first-class state machine transitions, not hacks.</p>
+  </section>
+
+  <section>
+    <h2>5 · Tree-Shaped Sessions</h2>
+    <p>Sessions are JSONL files where every entry has <code>id</code> + <code>parentId</code>. This unlocks:</p>
+    <div class="diagram">
+      <div class="mermaid">
+graph TD
+    M1["msg-1: user — 'Fix login bug'"]
+    M2["msg-2: assistant — tool calls"]
+    M3["msg-3: tool result"]
+    M4["msg-4: assistant — 'Done'"]
+    M5["msg-5: user — 'Also fix logout'"]
+    M6["msg-6: user — '/review' (side-quest)"]
+    M7["msg-7: assistant — review findings"]
+    M1 --> M2 --> M3 --> M4
+    M4 --> M5
+    M4 --> M6 --> M7
+      </div>
+    </div>
+    <ul>
+      <li><b><code>/tree</code></b> — jump to any past point, continue from there</li>
+      <li><b><code>/fork</code></b> — create a new session file from a branch point</li>
+      <li><b>Compaction</b> — older messages get summarized; full tree preserved in JSONL</li>
+      <li><b>Side-quests</b> — review/refactor in a branch, rewind, summarize the work back into main</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>6 · Extension System</h2>
+    <p>Extensions are TypeScript modules. The loader lives in <a href="https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/src/core/extensions/loader.ts"><code class="code-ref">packages/coding-agent/src/core/extensions/loader.ts</code></a>:</p>
+<pre><code>export default function (pi: ExtensionAPI) {
+  pi.registerTool({ name: "deploy", ... });        // Custom tools
+  pi.registerCommand("stats", { ... });             // Slash commands
+  pi.on("tool_call", async (event, ctx) => { });    // Event hooks
+  pi.registerComponent("MyOverlay", MyComponent);   // TUI components
+}</code></pre>
+
+    <div class="tabs">
+      <button data-tab="ext" class="active">Extension</button>
+      <button data-tab="skill">Skill</button>
+      <button data-tab="prompt">Prompt Template</button>
+      <button data-tab="theme">Theme</button>
+    </div>
+    <div class="tab-panel active" data-tab="ext">
+      <p><b>Format:</b> TypeScript &middot; <b>Loaded:</b> startup, hot-reloadable &middot; <b>For:</b> tools, commands, UI, hooks</p>
+      <p>Most powerful surface. Someone shipped <i>Doom</i> as a Pi extension. Truly anything is on the table.</p>
+    </div>
+    <div class="tab-panel" data-tab="skill">
+      <p><b>Format:</b> Markdown (<code>SKILL.md</code>) &middot; <b>Loaded:</b> on-demand by name or by the model &middot; <b>For:</b> domain knowledge, workflows</p>
+      <p>Loader: <a href="https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/src/core/skills.ts"><code class="code-ref">core/skills.ts</code></a> (max 64-char name, 1024-char description, frontmatter-parsed).</p>
+    </div>
+    <div class="tab-panel" data-tab="prompt">
+      <p><b>Format:</b> Markdown with <code>{{vars}}</code> &middot; <b>Loaded:</b> on <code>/name</code> &middot; <b>For:</b> reusable prompts</p>
+    </div>
+    <div class="tab-panel" data-tab="theme">
+      <p><b>Format:</b> JSON/TS &middot; <b>Loaded:</b> auto, hot-reload &middot; <b>For:</b> visual styling</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>7 · Capabilities Matrix</h2>
+    <table class="matrix">
+      <thead><tr><th>Capability</th><th>How Pi does it</th><th>Where to look</th></tr></thead>
+      <tbody>
+        <tr><td>Harness / runtime</td><td>Bun TUI + event-streamed agent loop</td><td><code>packages/agent/src/agent-loop.ts</code></td></tr>
+        <tr><td>Context management</td><td>Tree JSONL + auto-compaction</td><td><code>core/compaction/</code></td></tr>
+        <tr><td>Tool calling</td><td>4 core tools + TypeBox schemas + extension tools</td><td><code>packages/agent/src/types.ts</code></td></tr>
+        <tr><td>Automations</td><td>Slash commands, event hooks, prompt templates</td><td><code>core/extensions/</code></td></tr>
+        <tr><td>Skills</td><td>Markdown w/ frontmatter, progressive disclosure</td><td><code>core/skills.ts</code></td></tr>
+        <tr><td>Memory</td><td><code>AGENTS.md</code> walk-up + global config + session state</td><td><code>core/agent-session.ts</code></td></tr>
+        <tr><td>Planning loops</td><td>Optional via <code>pi-subagents</code>, <code>/todos</code> extensions</td><td>community</td></tr>
+        <tr><td>Testing</td><td>Vitest; provider parsing tests in <code>pi-ai</code></td><td><code>**/*.test.ts</code></td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>8 · Strengths & Tradeoffs</h2>
+    <div class="cards">
+      <div class="card">
+        <div class="icon">🧬</div>
+        <h4>Strengths</h4>
+        <ul>
+          <li>Smallest cognitive footprint</li>
+          <li>Hot-reload = self-debugging agent</li>
+          <li>True provider neutrality</li>
+          <li>Tree sessions are a novel UX primitive</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="icon">⚖️</div>
+        <h4>Tradeoffs</h4>
+        <ul>
+          <li>No MCP by default (bridge via <code>mcporter</code>)</li>
+          <li>TS-first extension API</li>
+          <li>Less batteries-included than Deep Agents or OpenCode</li>
+          <li>TUI runtime tied to Bun</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>9 · When to Choose Pi</h2>
+    <ul>
+      <li>You want to <b>own</b> your agent's behavior end-to-end</li>
+      <li>You're comfortable in TypeScript and prefer an extension API to a plugin marketplace</li>
+      <li>You need to multiplex providers (e.g., Claude for code, Gemini for vision, GPT-5 for browsing)</li>
+      <li>You want tree-based session UX without writing it yourself</li>
+      <li>You want a stable runtime that powers other interfaces (Slack, web, Telegram → see OpenClaw)</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>10 · Further Reading</h2>
+    <ul>
+      <li><a href="https://lucumr.pocoo.org/2026/1/31/pi/">Pi blog post — Armin Ronacher</a></li>
+      <li><a href="https://github.com/badlogic/pi-mono">pi-mono on GitHub</a></li>
+      <li><a href="https://openclaw.ai">OpenClaw</a></li>
+      <li><a href="comparison.html">Cross-agent comparison →</a></li>
+    </ul>
+  </section>
+
+</main>
+<footer class="site-footer">
+  AI Agent Architecture Series · Educational deep-dive #1 of 6 · <a href="https://github.com/humanjack/ai-engineering">repo</a>
+</footer>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script src="_shared.js"></script>
+</body>
+</html>
