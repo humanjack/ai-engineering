@@ -1,0 +1,9 @@
+stateDiagram-v2
+    [*] --> Created: agent calls skill_manage
+    Created --> Active: written to ~/.hermes/skills/
+    Active --> Pinned: agent or user marks pinned
+    Active --> Stale: 30 days unused
+    Stale --> Active: agent uses it again
+    Stale --> Archived: 90 days unused
+    Pinned --> Pinned: immune to auto-transitions
+    Archived --> Active: user restores

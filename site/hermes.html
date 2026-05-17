@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hermes Agent — The Self-Improving Maximalist Harness</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="_shared.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="wrap">
+    <div class="brand"><span class="brand-dot"></span> AI Agent Architecture Series</div>
+    <nav>
+      <a href="index.html">Index</a>
+      <a href="pi.html">Pi</a>
+      <a href="openclaw.html">OpenClaw</a>
+      <a href="hermes.html">Hermes</a>
+      <a href="opencode.html">OpenCode</a>
+      <a href="deepagents.html">Deep Agents</a>
+      <a href="codex.html">Codex</a>
+      <a href="comparison.html">Compare</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <h1 class="hero">Hermes Agent <span style="color:var(--muted);font-weight:400">— The self-improving maximalist harness</span></h1>
+  <p class="hero-sub">One giant <code>AIAgent</code> class. 80+ tools. 7 terminal backends. 20+ messaging gateways. A curator that promotes the agent's own skills. The Swiss Army knife of agents.</p>
+  <div class="hero-meta">
+    <span class="chip"><strong>Language</strong> Python 3.11+</span>
+    <span class="chip"><strong>License</strong> MIT</span>
+    <span class="chip"><strong>Default model</strong> Claude Opus 4.6</span>
+    <span class="chip"><a href="https://github.com/NousResearch/hermes-agent">↗ NousResearch/hermes-agent</a></span>
+  </div>
+
+  <section>
+    <h2>TL;DR</h2>
+    <div class="tldr">
+      <div class="card"><b>Monolithic by design.</b> One <code>AIAgent</code> class — <code>run_agent.py</code> is ~16,400 LOC. Conventional OpenAI-style JSON tool-calling loop with every operational feature bolted on.</div>
+      <div class="card"><b>Self-improving via a curated skill loop.</b> <code>skill_manage</code> lets the agent author its own markdown skills during a session; a background curator on the auxiliary model promotes / archives them on a 7-day cadence.</div>
+      <div class="card"><b>"Hermes" is branding, not coupling.</b> Default model is <code>anthropic/claude-opus-4.6</code>. The runtime warns if you point it at real Hermes-3/4 chat models.</div>
+    </div>
+    <p class="callout">Analogy: Hermes Agent is the Swiss Army knife. Every blade is real, every blade has been used in production, and the whole thing is somehow still one piece of metal.</p>
+  </section>
+
+  <section>
+    <h2>1 · The Shape of the Beast</h2>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TB
+    subgraph FrontDoors["Front doors"]
+        CLI[hermes CLI/TUI]
+        GW[Gateway daemon]
+        ACP[ACP server VS Code/Zed/JetBrains]
+        Batch[Batch trajectory runner]
+        MCP[MCP server inbound]
+        Cron[Cron scheduler]
+    end
+    subgraph Core["AIAgent (one Python class)"]
+        Loop[run_conversation loop]
+        Msgs[messages list<br/>OpenAI canonical]
+        Budget[IterationBudget shared w/ subagents]
+        SysPrompt[Cached system prompt]
+    end
+    subgraph Services["Services around the core"]
+        Reg[Tool Registry<br/>AST-discovered]
+        Ctx[Context Engine<br/>pluggable]
+        Mem[MemoryManager<br/>3 channels]
+        Hooks[17 plugin hooks]
+        DB[(SQLite + FTS5)]
+        Adapters[5 API adapters]
+    end
+    subgraph Providers["Wire"]
+        CC[chat_completions]
+        AM[anthropic_messages]
+        CR[codex_responses]
+        BC[bedrock_converse]
+        CAS[codex_app_server]
+    end
+    FrontDoors --> Core
+    Core --> Services
+    Services --> Adapters
+    Adapters --> CC & AM & CR & BC & CAS
+      </div>
+    </div>
+    <p>Load-bearing line at <code class="code-ref">run_agent.py:12541</code>:</p>
+<pre><code>while (api_call_count &lt; self.max_iterations
+       and self.iteration_budget.remaining &gt; 0) or self._budget_grace_call:</code></pre>
+    <p>The <code>or self._budget_grace_call</code> is a small kindness — when the budget runs out, the model gets one more iteration to produce a final summary.</p>
+  </section>
+
+  <section>
+    <h2>2 · A Turn, End to End</h2>
+    <div class="diagram">
+      <div class="mermaid">
+sequenceDiagram
+    participant U as User (or gateway)
+    participant A as AIAgent
+    participant P as Plugin hooks
+    participant C as ContextEngine
+    participant LLM as LLM
+    participant T as Tool
+    U->>A: message
+    A->>C: preflight token estimate
+    alt over threshold
+        C-->>A: compress old turns
+    end
+    A->>P: pre_llm_call (may inject user-msg context)
+    A->>LLM: chat.completions.create
+    LLM-->>A: response w/ optional tool_calls
+    A->>A: strip XML tool blocks (defensive)
+    alt has tool_calls
+        A->>A: parallel? read-only? path-overlap?
+        loop tool calls
+            A->>P: pre_tool_call
+            A->>T: dispatch
+            T-->>A: result
+            A->>P: post_tool_call (may rewrite)
+        end
+        A->>A: budget.consume(); loop
+    else final response
+        A->>P: post_llm_call
+        A-->>U: final assistant message
+    end
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>3 · The Self-Improving Skill Loop</h2>
+    <div class="diagram">
+      <div class="mermaid">
+stateDiagram-v2
+    [*] --> Created: agent calls skill_manage
+    Created --> Active: written to ~/.hermes/skills/&lt;name&gt;/
+    Active --> Pinned: agent or user marks pinned
+    Active --> Stale: 30 days unused
+    Stale --> Active: agent uses it again
+    Stale --> Archived: 90 days unused
+    Pinned --> Pinned: immune to auto-transitions
+    Archived --> Active: user restores
+      </div>
+    </div>
+    <p>The <b>curator</b> (<code>agent/curator.py</code>, 1,781 LOC) runs every 7 days on the auxiliary model (to preserve the main model's prompt cache) and can: promote skills the agent uses repeatedly to pinned, archive unused skills, consolidate near-duplicates, patch skill bodies for clarity. <b>Never auto-deletes. Pinned bypasses everything.</b></p>
+  </section>
+
+  <section>
+    <h2>4 · Memory — Three Orthogonal Channels</h2>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TB
+    subgraph Snap["Frozen snapshot in system prompt (cache-friendly)"]
+        SOUL[SOUL.md — persona]
+        AG[AGENTS.md — project context]
+        MEM[MEMORY.md — agent notes]
+        USR[USER.md — what agent knows about user]
+    end
+    subgraph Db["Persistent stores"]
+        DB[(SQLite state.db FTS5)]
+        Mfile[memory/ files on disk]
+        Ext[1 external provider*<br/>Honcho / Mem0 / Hindsight / Supermemory]
+    end
+    subgraph Loop["Per-turn"]
+        Live[memory tool returns live state]
+        Prefetch[provider.prefetch query]
+        Sync[provider.sync_turn after]
+    end
+    Snap -. read at session start .-> SystemPrompt
+    Loop -. read durably .-> Db
+    Db -. baked at next session .-> Snap
+      </div>
+    </div>
+    <p><b>Key invariant:</b> mid-session memory writes update files on disk durably but do <b>not</b> change the system prompt — this preserves the prefix cache. The <code>memory</code> tool's response contains the live state so the model still has read-back within the session.</p>
+  </section>
+
+  <section>
+    <h2>5 · Tool System — AST-Discovered Plugins</h2>
+    <p>The tool registry is unusual: <code>_module_registers_tools</code> AST-parses each <code>tools/&lt;name&gt;.py</code> and imports only modules that actually call <code>registry.register(...)</code>. No hand-maintained registration list.</p>
+    <table class="matrix">
+      <thead><tr><th>Dispatch path</th><th>What it routes</th><th>Examples</th></tr></thead>
+      <tbody>
+        <tr><td>Agent-internal</td><td>Direct state mutations</td><td><code>todo</code>, <code>memory</code>, <code>clarify</code>, <code>delegate_task</code>, <code>session_search</code></td></tr>
+        <tr><td>Registry</td><td>~75 normal tools</td><td><code>terminal</code>, <code>read_file</code>, <code>write_file</code>, <code>apply_patch</code>, <code>image_generate</code>, <code>web_search</code></td></tr>
+        <tr><td>MCP</td><td>Outbound MCP servers</td><td>configured in <code>~/.hermes/config.yaml</code></td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>6 · Capabilities Matrix</h2>
+    <table class="matrix">
+      <tbody>
+        <tr><td>Harness</td><td>Monolithic AIAgent, 5 entry points → 1 loop</td></tr>
+        <tr><td>Context</td><td>Pluggable ContextEngine + ContextCompressor + preflight + reactive</td></tr>
+        <tr><td>Tools</td><td>JSON function-calling, AST registry, 3 dispatch paths</td></tr>
+        <tr><td>Automations</td><td>17 plugin hooks + cron (file-locked 60s tick) + webhooks + slash commands</td></tr>
+        <tr><td>Skills</td><td>SKILL.md (agentskills.io) + progressive disclosure + Skills Hub</td></tr>
+        <tr><td>Memory</td><td>3 channels: identity / curated bounded / pluggable external (1 at a time)</td></tr>
+        <tr><td>Planning</td><td>todo (in-memory, history-hydrated) + delegate_task (subagents)</td></tr>
+        <tr><td>Sandboxing</td><td>7 terminal backends: local/docker/ssh/singularity/modal/daytona/vercel</td></tr>
+        <tr><td>MCP</td><td>Client (built-in) + Server (inbound)</td></tr>
+        <tr><td>Self-improvement</td><td>skill_manage + curator on auxiliary model</td></tr>
+        <tr><td>Testing</td><td>~17k tests across ~900 files</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>7 · Cache Discipline — The Frozen-Snapshot Trick</h2>
+    <ol>
+      <li><b>System prompt built once</b> per session, reused verbatim, stored in <code>_cached_system_prompt</code></li>
+      <li><b>New plugin context per turn</b> injected into the <i>user</i> message, never the system prompt</li>
+      <li><b>Memory writes</b> visible to the writer's <code>memory</code> tool response (live state) but only baked into the system prompt on next session</li>
+      <li><b>Curator runs on auxiliary model</b> so its expensive reviews don't pollute main cache</li>
+    </ol>
+    <p>Small choices that compound into a real cost-per-turn delta in long sessions.</p>
+  </section>
+
+  <section>
+    <h2>8 · Testing & Trajectory Pipeline</h2>
+    <ul>
+      <li>~17,000 tests across ~900 files</li>
+      <li>Canonical runner: <code>scripts/run_tests.sh</code> with <code>-n 4</code> xdist, <code>TZ=UTC</code>, <code>PYTHONHASHSEED=0</code></li>
+      <li>Heavy edge-case coverage: long context overflow, 4xx compression handling, Anthropic prompt-cache policy, dedup</li>
+      <li><code>mini_swe_runner.py</code> (~28k LOC) — SWE-bench-style runner using Hermes's terminal backends</li>
+      <li>Trajectory format on disk = XML (<code>&lt;tool_call&gt;</code>/<code>&lt;tool_response&gt;</code>); wire format = JSON. Dual representation reflects Hermes 3 training heritage.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>9 · Strengths & Tradeoffs</h2>
+    <div class="cards">
+      <div class="card">
+        <div class="icon">💪</div>
+        <h4>Strengths</h4>
+        <ul>
+          <li>Everything in the box</li>
+          <li>Self-improving skill loop is a real differentiator</li>
+          <li>Disciplined cache management</li>
+          <li>17k tests, very long-tail edge case coverage</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="icon">⚖️</div>
+        <h4>Tradeoffs</h4>
+        <ul>
+          <li>16k-LOC <code>run_agent.py</code> is a commitment</li>
+          <li>Python plugins are unsandboxed</li>
+          <li>New hook events require core PRs</li>
+          <li>Cron coupled to gateway uptime</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>10 · Key Takeaways</h2>
+    <ol>
+      <li><b>Engineering &gt; Novelty.</b> "Shipping an agent" is mostly retries, surrogates, JSON repair, dead-connection cleanup, and provider quirks.</li>
+      <li><b>Cache discipline pays</b> — frozen-snapshot system prompts + user-message context injection + auxiliary-model curator.</li>
+      <li><b>AST-based plugin discovery</b> beats hand-maintained registries.</li>
+      <li><b>Self-improvement needs invariants</b> — never auto-delete, pinned bypasses, archive recoverable.</li>
+      <li><b>Bounded memory is honest</b> — explicit curation > infinite vector recall.</li>
+    </ol>
+  </section>
+</main>
+<footer class="site-footer">
+  AI Agent Architecture Series · <a href="https://github.com/humanjack/ai-engineering">repo</a>
+</footer>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script src="_shared.js"></script>
+</body>
+</html>
