@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OpenAI Codex CLI — One Protocol, Five Frontends, Three Sandboxes</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="_shared.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="wrap">
+    <div class="brand"><span class="brand-dot"></span> AI Agent Architecture Series</div>
+    <nav>
+      <a href="index.html">Index</a>
+      <a href="pi.html">Pi</a>
+      <a href="openclaw.html">OpenClaw</a>
+      <a href="hermes.html">Hermes</a>
+      <a href="opencode.html">OpenCode</a>
+      <a href="deepagents.html">Deep Agents</a>
+      <a href="codex.html">Codex</a>
+      <a href="comparison.html">Compare</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <h1 class="hero">OpenAI Codex CLI <span style="color:var(--muted);font-weight:400">— one protocol, five frontends, three sandboxes</span></h1>
+  <p class="hero-sub">Rust workspace of ~120 crates. Same agent core serves TUI, headless exec, IDE, app-server, and inbound MCP — through one Op/EventMsg protocol. Three-layer OS sandboxes per platform.</p>
+  <div class="hero-meta">
+    <span class="chip"><strong>Language</strong> Rust</span>
+    <span class="chip"><strong>License</strong> Apache 2.0</span>
+    <span class="chip"><strong>Workspace</strong> codex-rs/ ~120 crates</span>
+    <span class="chip"><a href="https://github.com/openai/codex">↗ openai/codex</a></span>
+  </div>
+
+  <section>
+    <h2>TL;DR</h2>
+    <div class="tldr">
+      <div class="card"><b>One protocol, five frontends.</b> A single <code>Op</code> / <code>EventMsg</code> protocol connects TUI, <code>exec</code>, IDE plugin, JSON-RPC app-server, and inbound MCP server to one agent core via <code>submission_loop</code>.</div>
+      <div class="card"><b>Sandboxing is the differentiator.</b> Three layers per platform — Seatbelt + execpolicy + approval (macOS), bubblewrap + seccomp + Landlock + execpolicy (Linux), AppContainer + Job objects (Windows). <code>.git</code>, <code>.codex</code>, <code>AGENTS.md</code> are read-only even inside writable roots.</div>
+      <div class="card"><b>Claude-Code-compatible hooks.</b> Same 8 events over JSON-over-stdio. The engine type is literally named <code>ClaudeHooksEngine</code>. <code>Stop</code> hooks can demand continuation.</div>
+    </div>
+    <p class="callout">Analogy: Codex CLI is the agent for people who want a real sandbox. Most agents say "trust the model"; Codex makes the OS say "I will not let the model do that".</p>
+  </section>
+
+  <section>
+    <h2>1 · The Workspace at a Glance</h2>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TB
+    subgraph Frontends["5 frontends, 1 protocol"]
+        TUI[tui — ratatui terminal UI]
+        Exec[exec — headless one-shot]
+        App[app-server — JSON-RPC for IDE/desktop]
+        McpS[mcp-server — Codex as MCP tool]
+        IDE[IDE plugin]
+    end
+    subgraph Core["core/ — agent core"]
+        Sub[submission_loop handlers.rs:733]
+        Turn[run_turn turn.rs:141]
+        Tools[ToolCallRuntime]
+        Agents[AGENTS.md manager]
+        Skills[SkillsManager]
+        Compact[3 compaction modes]
+    end
+    subgraph Tools_["Tool handlers"]
+        Shell[shell / local_shell]
+        Exec_[exec_command + write_stdin]
+        Patch[apply_patch]
+        Plan[update_plan]
+        Mcp[mcp]
+        SubAg[agent_jobs / multi_agents]
+    end
+    subgraph Sandbox["Sandbox crates"]
+        Seat[sandboxing — Seatbelt .sbpl]
+        Linux[linux-sandbox — bwrap+seccomp+Landlock]
+        Win[windows-sandbox-rs — AppContainer]
+        Exec2[execpolicy — Starlark rules]
+    end
+    subgraph Provider["Provider"]
+        Resp[OpenAI Responses API<br/>WS primary, HTTPS fallback]
+        Other[Anthropic / Ollama / Bedrock]
+    end
+    Frontends --> Sub --> Turn --> Tools --> Tools_
+    Tools_ -.shell/patch.-> Sandbox
+    Turn --> Provider
+    Turn --> Agents
+    Turn --> Skills
+    Turn --> Compact
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>2 · Submission Loop & Per-Turn Loop</h2>
+    <div class="diagram">
+      <div class="mermaid">
+sequenceDiagram
+    participant F as Frontend
+    participant S as submission_loop
+    participant T as Task
+    participant R as run_turn
+    participant Hooks as Hooks engine
+    participant LLM as Provider
+    F->>S: Submission { id, op: UserTurn{...} }
+    S->>T: spawn Task
+    T->>R: run_turn(...)
+    R->>R: pre-compact if near limit
+    R->>R: resolve skills + plugin mentions + MCP tools
+    R->>Hooks: SessionStart, UserPromptSubmit
+    loop until done
+        R->>R: drain pending input
+        R->>LLM: run_sampling_request (Responses API)
+        LLM-->>R: streamed events
+        alt ContextWindowExceeded
+            R->>R: run_auto_compact mid-turn
+        else needs_follow_up
+            R->>R: continue loop
+        else done
+            R->>Hooks: Stop, AfterAgent
+            alt Stop hook returns continuation_fragment
+                R->>R: re-enter loop with new user message
+            end
+        end
+    end
+    R-->>F: EventMsg stream
+      </div>
+    </div>
+    <p>Five distinct re-entry points in <code>run_turn</code> (~600 lines) make the lifecycle subtle but powerful.</p>
+  </section>
+
+  <section>
+    <h2>3 · The Three-Layer Sandbox — Linux</h2>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TB
+    Cmd[shell command]
+    Helper[codex-linux-sandbox<br/>helper binary]
+    Bwrap[bubblewrap mounts<br/>ro / + rw roots<br/>+ mask .git/.codex/AGENTS.md]
+    Seccomp[seccomp filter<br/>Restricted or ProxyRouted]
+    NNP[PR_SET_NO_NEW_PRIVS]
+    Land[Landlock FS rules<br/>fallback]
+    Child[child process]
+    Cmd --> Helper --> Bwrap --> Seccomp --> NNP --> Land --> Child
+      </div>
+    </div>
+    <p>Seccomp modes — <b>Restricted</b>: deny <code>connect/accept/bind/listen</code> for non-<code>AF_UNIX</code>; always deny <code>ptrace</code>, <code>process_vm_readv/writev</code>, <code>io_uring_*</code>. <b>ProxyRouted</b>: invert — only <code>AF_INET</code>/<code>AF_INET6</code> allowed (child reaches in-namespace TCP proxy).</p>
+  </section>
+
+  <section>
+    <h2>4 · The Three-Layer Sandbox — macOS</h2>
+<pre><code># sandboxing/src/seatbelt.rs:602::create_seatbelt_command_args
+/usr/bin/sandbox-exec \
+  -p &lt;policy&gt; \
+  -D READABLE_ROOT_0=/path/to/root \
+  -- &lt;command&gt;</code></pre>
+    <p>The hard-coded <code>/usr/bin/sandbox-exec</code> path is a real defense-in-depth choice — if <code>$PATH</code> is compromised, the system binary still runs. Final policy = base (closed-by-default) + per-root rules + (optional) network policy + restricted defaults.</p>
+    <p class="callout"><b>Critical invariant across all platforms:</b> <code>PROTECTED_METADATA_PATH_NAMES</code> — <code>.git</code>, <code>.codex</code>, <code>.agents</code>, <code>AGENTS.md</code> are read-only even inside writable roots. The agent can't rewrite its own rules.</p>
+  </section>
+
+  <section>
+    <h2>5 · Approval & Execpolicy</h2>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart LR
+    A[shell command] --> B{execpolicy?}
+    B -- forbidden --> Stop[reject]
+    B -- allow --> C{AskForApproval policy?}
+    B -- prompt --> Approve[ask user]
+    C -- UnlessTrusted --> D{is_safe_command?}
+    D -- yes --> Run[sandbox + run]
+    D -- no --> Approve
+    C -- OnRequest --> Run
+    C -- Granular --> Splits[per-action booleans]
+    C -- Never --> Stop
+    Approve -- approved --> Run
+    Approve -- denied --> Stop
+      </div>
+    </div>
+    <p>Starlark execpolicy rules ([<code>prefix_rule</code>, <code>host_executable</code>]) gate commands before approval. Three lines of defense before a destructive command executes: execpolicy → user approval → sandbox.</p>
+  </section>
+
+  <section>
+    <h2>6 · Hooks — Claude-Code-Compatible by Design</h2>
+    <table class="matrix">
+      <thead><tr><th>Event</th><th>Fires</th></tr></thead>
+      <tbody>
+        <tr><td><code>PreToolUse</code></td><td>Before a tool executes</td></tr>
+        <tr><td><code>PostToolUse</code></td><td>After a tool returns</td></tr>
+        <tr><td><code>PermissionRequest</code></td><td>When permission is needed</td></tr>
+        <tr><td><code>PreCompact</code> / <code>PostCompact</code></td><td>Around compaction</td></tr>
+        <tr><td><code>SessionStart</code></td><td>Once per session</td></tr>
+        <tr><td><code>UserPromptSubmit</code></td><td>After every user message</td></tr>
+        <tr><td><code>Stop</code></td><td>When the agent says it's done</td></tr>
+      </tbody>
+    </table>
+    <p>The engine type is literally named <code>ClaudeHooksEngine</code>. <code>Stop</code> hooks can demand continuation by returning <code>continuation_fragments</code> — turning hooks into a QA gate, not just an audit log.</p>
+  </section>
+
+  <section>
+    <h2>7 · MCP — Both Directions</h2>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart LR
+    Ext1[(External MCP server)]
+    Ext2[(External MCP server)]
+    Cx[Codex agent core]
+    Other[(Claude / other agent)]
+    Cx -- outbound client<br/>codex-mcp + rmcp --> Ext1
+    Cx -- outbound client --> Ext2
+    Other -- inbound MCP<br/>codex tool --> Cx
+      </div>
+    </div>
+    <p>Codex can call MCP servers (outbound) <b>and</b> be called as an MCP tool (inbound). Claude can spawn Codex as a sub-agent for terminal work and get streamed results back.</p>
+  </section>
+
+  <section>
+    <h2>8 · AGENTS.md — Hierarchical Memory</h2>
+    <ul>
+      <li>Walk up from <code>cwd</code> to project root (default marker <code>.git</code>)</li>
+      <li>Collect every <code>AGENTS.md</code> along the path, root-first</li>
+      <li>Concatenate with <code>--- project-doc ---</code> separator into the developer message</li>
+      <li><code>AGENTS.override.md</code> takes precedence over <code>AGENTS.md</code></li>
+      <li>Global <code>~/.codex/AGENTS.md</code> loaded by <code>AgentsMdManager::load_global_instructions</code></li>
+      <li>Sub-dir discovery during the turn is left to the model</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>9 · Capabilities Matrix</h2>
+    <table class="matrix">
+      <tbody>
+        <tr><td>Harness</td><td>5 frontends → 1 Op/EventMsg protocol</td></tr>
+        <tr><td>Context mgmt</td><td>3 compaction modes (local / remote v1 / remote v2), mid-turn capable</td></tr>
+        <tr><td>Tools</td><td>~15 built-in handlers; parallel via ToolCallRuntime</td></tr>
+        <tr><td>Sandboxing</td><td>3 layers per platform — strongest among coding-agent CLIs</td></tr>
+        <tr><td>Approval</td><td>AskForApproval enum w/ Granular variant; execpolicy gating</td></tr>
+        <tr><td>Automations</td><td>Claude-Code-compatible hooks (8 events); built-in slash cmds</td></tr>
+        <tr><td>Skills</td><td>SKILL.md w/ explicit @ + implicit policy; injected as user fragments</td></tr>
+        <tr><td>Memory</td><td>AGENTS.md hierarchical + override + global + session rollouts</td></tr>
+        <tr><td>Planning</td><td>update_plan tool + Plan mode (tool disabled in Plan)</td></tr>
+        <tr><td>Sub-agents</td><td>First-class — registry, mailboxes, goals, multi_agents parallel</td></tr>
+        <tr><td>MCP</td><td>Client (codex-mcp/) + Server (mcp-server/)</td></tr>
+        <tr><td>Testing</td><td>~86 integration tests + VT100 golden tests + insta snapshots</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>10 · Strengths & Tradeoffs</h2>
+    <div class="cards">
+      <div class="card">
+        <div class="icon">💪</div>
+        <h4>Strengths</h4>
+        <ul>
+          <li>Strongest sandbox among coding-agent CLIs</li>
+          <li>Claude-Code-compatible hooks (portable behavior)</li>
+          <li>One protocol, many frontends</li>
+          <li>First-class sub-agent infra w/ mailboxes</li>
+          <li>Mid-turn compaction</li>
+          <li>Hard-coded sandbox-exec for PATH defense</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="icon">⚖️</div>
+        <h4>Tradeoffs</h4>
+        <ul>
+          <li><code>run_turn</code> ~600 lines, 5 re-entry points</li>
+          <li>Sandbox spawn overhead per shell call</li>
+          <li>Provider-aware compaction is leaky abstraction</li>
+          <li>Rust workspace (~120 crates) onboarding cost</li>
+          <li>Cross-session memory crate still in development</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>11 · Key Takeaways</h2>
+    <ol>
+      <li><b>The sandbox is the lesson.</b> Three independent enforcement layers + metadata masking = strongest current take on "untrust the model".</li>
+      <li><b>One protocol unlocks many frontends.</b> Every UI is just a different mouth feeding the same <code>submission_loop</code>.</li>
+      <li><b>Hooks as continuation triggers.</b> <code>Stop</code> hooks can demand the agent keep working — QA gate, not just audit log.</li>
+      <li><b>Mid-turn compaction with model-aware re-injection.</b> Leaky but pragmatically necessary.</li>
+      <li><b>Skills as user fragments, not system messages.</b> Preserves prompt cache while still adding capability.</li>
+    </ol>
+  </section>
+</main>
+<footer class="site-footer">
+  AI Agent Architecture Series · <a href="https://github.com/humanjack/ai-engineering">repo</a>
+</footer>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script src="_shared.js"></script>
+</body>
+</html>
