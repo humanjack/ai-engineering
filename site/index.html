@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI Agent Architecture Series</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="_shared.css">
+  <style>
+    .agent-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 18px; margin: 24px 0; }
+    .agent-card { background: linear-gradient(180deg, var(--panel-2), var(--panel)); border: 1px solid var(--border); border-radius: 14px; padding: 22px; transition: all .2s; position: relative; overflow: hidden; }
+    .agent-card:hover { transform: translateY(-4px); border-color: var(--accent); box-shadow: 0 20px 40px -20px rgba(124, 140, 255, 0.4); }
+    .agent-card::before { content: ''; position: absolute; inset: 0; background: linear-gradient(135deg, transparent 0%, rgba(124, 140, 255, 0.06) 100%); pointer-events: none; }
+    .agent-card h3 { margin: 0 0 6px; font-size: 22px; color: var(--text); border: 0; padding: 0; }
+    .agent-card .lang { font-family: var(--font-mono); font-size: 11px; color: var(--accent-2); display: block; margin-bottom: 12px; }
+    .agent-card .tagline { color: var(--muted); font-size: 14px; line-height: 1.5; margin: 0 0 14px; min-height: 60px; }
+    .agent-card a.cta { display: inline-block; color: var(--accent-2); font-weight: 600; font-size: 14px; }
+    .agent-card a.cta:hover { color: var(--text); }
+    .agent-card .num { position: absolute; top: 12px; right: 16px; font-family: var(--font-mono); font-size: 11px; color: var(--muted); opacity: .5; }
+    .hero-banner { padding: 60px 24px; text-align: center; }
+    .hero-banner h1 { font-size: 56px; margin: 0 0 12px; }
+    .quick-pick { background: linear-gradient(135deg, rgba(124, 140, 255, 0.08), rgba(79, 209, 197, 0.05)); border: 1px solid var(--border); border-radius: 16px; padding: 28px; margin: 32px 0; }
+    .quick-pick h2 { border: 0; padding: 0; }
+    .quick-pick dl { display: grid; grid-template-columns: max-content 1fr; gap: 10px 16px; margin: 16px 0 0; }
+    .quick-pick dt { font-weight: 600; color: var(--accent-2); font-size: 14px; }
+    .quick-pick dd { margin: 0; color: var(--text); font-size: 14px; }
+    .quick-pick dd a { font-weight: 600; }
+  </style>
+</head>
+<body>
+<header class="site-header">
+  <div class="wrap">
+    <div class="brand"><span class="brand-dot"></span> AI Agent Architecture Series</div>
+    <nav>
+      <a href="index.html">Index</a>
+      <a href="pi.html">Pi</a>
+      <a href="openclaw.html">OpenClaw</a>
+      <a href="hermes.html">Hermes</a>
+      <a href="opencode.html">OpenCode</a>
+      <a href="deepagents.html">Deep Agents</a>
+      <a href="codex.html">Codex</a>
+      <a href="comparison.html">Compare</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <div class="hero-banner">
+    <h1 class="hero">How AI Agents <span style="color:var(--muted);font-weight:400">actually work</span></h1>
+    <p class="hero-sub" style="margin: 0 auto; font-size: 19px;">Six deep-dives on real open-source agent codebases. Grounded in source. Illustrated with diagrams. Synthesized into a comparison guide.</p>
+  </div>
+
+  <section>
+    <h2>The Six Agents</h2>
+    <div class="agent-grid">
+
+      <div class="agent-card">
+        <div class="num">01</div>
+        <h3>Pi</h3>
+        <span class="lang">TypeScript · badlogic/pi-mono</span>
+        <p class="tagline">Minimal self-extending coding agent. 4 built-in tools, tree-shaped sessions, hot-reloadable TypeScript extensions. Powers OpenClaw.</p>
+        <a href="pi.html" class="cta">Read deep-dive →</a>
+      </div>
+
+      <div class="agent-card">
+        <div class="num">02</div>
+        <h3>OpenClaw</h3>
+        <span class="lang">TypeScript · openclaw/openclaw</span>
+        <p class="tagline">Multi-channel productization of Pi. Gateway daemon + 22+ messaging surfaces + 122 plugins + cron + Docker sandboxes.</p>
+        <a href="openclaw.html" class="cta">Read deep-dive →</a>
+      </div>
+
+      <div class="agent-card">
+        <div class="num">03</div>
+        <h3>Hermes Agent</h3>
+        <span class="lang">Python · NousResearch/hermes-agent</span>
+        <p class="tagline">Maximalist Python harness with a self-improving skill curator. 16k LOC of agent engineering and a 7-day skill review cycle.</p>
+        <a href="hermes.html" class="cta">Read deep-dive →</a>
+      </div>
+
+      <div class="agent-card">
+        <div class="num">04</div>
+        <h3>OpenCode</h3>
+        <span class="lang">TS + Go · sst/opencode</span>
+        <p class="tagline">LSP-native coding agent. Edits wait for compiler diagnostics. Tree-sitter bash perms. Shadow-git snapshots. No vector DB.</p>
+        <a href="opencode.html" class="cta">Read deep-dive →</a>
+      </div>
+
+      <div class="agent-card">
+        <div class="num">05</div>
+        <h3>Deep Agents</h3>
+        <span class="lang">Python · langchain-ai/deepagents</span>
+        <p class="tagline">LangChain's opinionated harness. Middleware-composable. Sub-agents, summarization, large-result eviction, harbor evals.</p>
+        <a href="deepagents.html" class="cta">Read deep-dive →</a>
+      </div>
+
+      <div class="agent-card">
+        <div class="num">06</div>
+        <h3>Codex CLI</h3>
+        <span class="lang">Rust · openai/codex</span>
+        <p class="tagline">One Op/EventMsg protocol, five frontends, three-layer OS sandboxes. Claude-Code-compatible hooks. First-class sub-agent mailboxes.</p>
+        <a href="codex.html" class="cta">Read deep-dive →</a>
+      </div>
+
+    </div>
+  </section>
+
+  <section class="quick-pick">
+    <h2 style="margin-top: 0">⚡ Quick Pick — Which One Should I Use?</h2>
+    <dl>
+      <dt>Need a minimal core?</dt><dd><a href="pi.html">Pi</a> — 4 tools, build the rest yourself</dd>
+      <dt>Multi-channel personal assistant?</dt><dd><a href="openclaw.html">OpenClaw</a> — 22+ messaging surfaces</dd>
+      <dt>Self-improving skills?</dt><dd><a href="hermes.html">Hermes</a> — `skill_manage` + curator</dd>
+      <dt>Code-editing agent with type-checking?</dt><dd><a href="opencode.html">OpenCode</a> — LSP feedback in the loop</dd>
+      <dt>Middleware-composable, with evals?</dt><dd><a href="deepagents.html">Deep Agents</a> — LangGraph + `harbor`</dd>
+      <dt>Need real OS-enforced sandboxing?</dt><dd><a href="codex.html">Codex CLI</a> — 3 layers per platform</dd>
+    </dl>
+  </section>
+
+  <section>
+    <h2>Decision Tree</h2>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TD
+    Start{What do you need?}
+    Start --> Code{Coding agent?}
+    Start --> Chat{Chat assistant?}
+    Start --> Research{Research / sub-agents?}
+    Code --> Strong{Need OS sandbox?}
+    Strong -- yes --> Codex[Codex CLI]
+    Strong -- no --> LSP{Want LSP feedback?}
+    LSP -- yes --> OpenCode[OpenCode]
+    LSP -- no --> Min{Minimal core?}
+    Min -- yes --> Pi[Pi]
+    Min -- no --> Hermes[Hermes Agent]
+    Chat --> Channels{Multi-channel?}
+    Channels -- yes --> OpenClaw2[OpenClaw or Hermes]
+    Channels -- no --> Pi2[Pi]
+    Research --> Sub{Real sub-agents?}
+    Sub -- yes --> DA[Deep Agents]
+    Sub -- "+mailboxes" --> Codex2[Codex CLI]
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>What Each Section Covers</h2>
+    <div class="cards">
+      <div class="card"><h4>🏗 Harness / runtime</h4><p>Process model, event loop, IPC between processes</p></div>
+      <div class="card"><h4>🧠 Context management</h4><p>Compaction, caching, prompt structure</p></div>
+      <div class="card"><h4>🛠 Tool calling</h4><p>Definition, dispatch, sandboxing, schemas</p></div>
+      <div class="card"><h4>⚡ Automations</h4><p>Hooks, slash commands, cron, schedules</p></div>
+      <div class="card"><h4>📚 Skills / plugins</h4><p>Discovery, progressive disclosure, MCP</p></div>
+      <div class="card"><h4>💾 Memory</h4><p>Short-term, long-term, file-based, vector</p></div>
+      <div class="card"><h4>📝 Planning loops</h4><p>Todos, sub-agents, plan mode, ReAct</p></div>
+      <div class="card"><h4>🧪 Testing & eval</h4><p>Unit tests, golden tests, eval harnesses</p></div>
+    </div>
+  </section>
+
+  <section style="text-align: center; margin-top: 60px;">
+    <h2 style="display: inline-block; border-left: 0; padding-left: 0;">Ready to compare?</h2>
+    <p style="font-size: 18px; margin: 12px 0 24px;">See the full side-by-side capability matrix and "same problem, different solutions" tables.</p>
+    <p><a href="comparison.html" style="display: inline-block; background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #0b1020; padding: 14px 28px; border-radius: 8px; font-weight: 700; text-decoration: none;">Go to comparison →</a></p>
+  </section>
+</main>
+
+<footer class="site-footer">
+  AI Agent Architecture Series · Educational deep-dives on 6 open-source agents · <a href="https://github.com/humanjack/ai-engineering/issues/51">umbrella issue</a>
+</footer>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script src="_shared.js"></script>
+</body>
+</html>
