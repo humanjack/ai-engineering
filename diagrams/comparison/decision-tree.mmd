@@ -1,0 +1,18 @@
+flowchart TD
+    Start{What do you need?}
+    Start --> Code{Coding agent?}
+    Start --> Chat{Chat assistant?}
+    Start --> Research{Research / sub-agents?}
+    Code --> Strong{Need OS sandbox?}
+    Strong -- yes --> Codex[Codex CLI]
+    Strong -- no --> LSP{Want LSP feedback?}
+    LSP -- yes --> OpenCode[OpenCode]
+    LSP -- no --> Min{Minimal core?}
+    Min -- yes --> Pi[Pi]
+    Min -- no --> Hermes[Hermes Agent]
+    Chat --> Channels{Multi-channel?}
+    Channels -- yes --> OpenClaw2[OpenClaw or Hermes]
+    Channels -- no --> Pi2[Pi]
+    Research --> Sub{Real sub-agents?}
+    Sub -- yes --> DA[Deep Agents]
+    Sub -- "+mailboxes" --> Codex2[Codex CLI]

@@ -1,0 +1,22 @@
+flowchart TD
+    Claude[Claude Code<br/>Anthropic]
+    Pi
+    OC[OpenClaw]
+    Her[Hermes]
+    OCo[OpenCode]
+    DA[Deep Agents]
+    Cx[Codex CLI]
+    Claude -. AGENTS.md convention .-> Pi
+    Claude -. AGENTS.md .-> OCo
+    Claude -. AGENTS.md .-> Cx
+    Claude -. AGENTS.md .-> DA
+    Claude -. hooks schema .-> Cx
+    Claude -. hooks schema .-> Her
+    Claude -. SKILL.md progressive disclosure .-> Pi
+    Claude -. SKILL.md .-> Her
+    Claude -. SKILL.md .-> Cx
+    Claude -. SKILL.md .-> DA
+    Pi -- embedded as runtime --> OC
+    Pi -. inspires .-> OCo
+    DA -. middleware idea .-> Cx
+    Cx -. compaction patterns .-> Her

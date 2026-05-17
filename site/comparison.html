@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cross-Agent Comparison — AI Agent Architecture Series</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="_shared.css">
+  <style>
+    table.compare th, table.compare td { font-size: 13px; padding: 8px 10px; vertical-align: top; }
+    table.compare th:first-child, table.compare td:first-child { font-weight: 600; white-space: nowrap; }
+    table.compare td { line-height: 1.45; }
+    table.compare .y { color: var(--good); font-weight: 600; }
+    table.compare .n { color: var(--bad); opacity: .6; }
+    table.compare .p { color: var(--warn); }
+    .legend { display: flex; gap: 18px; font-size: 13px; color: var(--muted); margin: 8px 0 20px; }
+    .legend span b.y { color: var(--good); }
+    .legend span b.n { color: var(--bad); }
+    .legend span b.p { color: var(--warn); }
+    .compare-wrap { overflow-x: auto; }
+    .philosophy { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 20px; margin: 16px 0; }
+    .philosophy .row { background: var(--panel); border-left: 3px solid var(--accent); padding: 10px 14px; border-radius: 6px; }
+    .philosophy .row b { color: var(--accent-2); }
+    @media (max-width: 720px) {
+      .philosophy { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+<header class="site-header">
+  <div class="wrap">
+    <div class="brand"><span class="brand-dot"></span> AI Agent Architecture Series</div>
+    <nav>
+      <a href="index.html">Index</a>
+      <a href="pi.html">Pi</a>
+      <a href="openclaw.html">OpenClaw</a>
+      <a href="hermes.html">Hermes</a>
+      <a href="opencode.html">OpenCode</a>
+      <a href="deepagents.html">Deep Agents</a>
+      <a href="codex.html">Codex</a>
+      <a href="comparison.html">Compare</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <h1 class="hero">Cross-Agent <span style="color:var(--muted);font-weight:400">comparison</span></h1>
+  <p class="hero-sub">How the six agents stack up. Same capability, different solutions. Use this page to pick the right one for your project — or steal the right idea for yours.</p>
+
+  <section>
+    <h2>Capability Matrix</h2>
+    <p class="legend">
+      <span><b class="y">✓</b> first-class</span>
+      <span><b class="p">~</b> partial / opt-in</span>
+      <span><b class="n">✗</b> absent</span>
+    </p>
+    <div class="compare-wrap">
+      <table class="compare matrix">
+        <thead>
+          <tr><th>Capability</th><th>Pi</th><th>OpenClaw</th><th>Hermes</th><th>OpenCode</th><th>Deep Agents</th><th>Codex</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Language</td><td>TypeScript</td><td>TypeScript</td><td>Python</td><td>TS + Go TUI</td><td>Python</td><td>Rust</td></tr>
+          <tr><td>Default tool count</td><td>4</td><td>~50 (5 layers)</td><td>80+</td><td>11 + MCP</td><td>~15</td><td>~15 + MCP</td></tr>
+          <tr><td>Sandboxing</td><td class="n">✗ none</td><td>Docker / SSH / OpenShell</td><td>7 backends</td><td>tree-sitter AST perms</td><td>partner sandboxes</td><td class="y">✓ Seatbelt + bwrap + seccomp + Landlock</td></tr>
+          <tr><td>Stop-hook continuation</td><td class="n">✗</td><td class="n">✗</td><td class="n">✗</td><td class="n">✗</td><td class="n">✗</td><td class="y">✓</td></tr>
+          <tr><td>MCP client</td><td class="p">~ via mcporter</td><td class="y">✓</td><td class="y">✓</td><td class="y">✓</td><td class="y">✓</td><td class="y">✓</td></tr>
+          <tr><td>MCP server (inbound)</td><td class="n">✗</td><td class="y">✓</td><td class="y">✓</td><td class="n">✗</td><td class="n">✗</td><td class="y">✓</td></tr>
+          <tr><td>Skills (markdown)</td><td class="y">✓ progressive</td><td>56 bundled</td><td class="y">✓ + Skills Hub</td><td>dev branch only</td><td class="y">✓ progressive</td><td class="y">✓ explicit + implicit</td></tr>
+          <tr><td>Vector DB by default</td><td class="n">✗</td><td class="n">✗ (plugin)</td><td class="n">✗ (1 ext)</td><td class="n">✗</td><td class="n">✗</td><td class="n">✗</td></tr>
+          <tr><td>Self-improving skills</td><td class="n">✗</td><td class="n">✗</td><td class="y">✓ curator</td><td class="n">✗</td><td class="n">✗</td><td class="n">✗</td></tr>
+          <tr><td>Session shape</td><td><b>tree</b></td><td>JSONL</td><td>SQLite FTS5</td><td>JSON → SQLite</td><td>LangGraph state</td><td>JSONL rollouts</td></tr>
+          <tr><td>Sub-agents</td><td>community ext</td><td><code>sessions_spawn</code></td><td><code>delegate_task</code></td><td><code>task</code> sync</td><td><code>task</code> parallel</td><td class="y">first-class + mailboxes</td></tr>
+          <tr><td>Cron / webhooks</td><td class="n">✗</td><td class="y">✓ + Gmail PubSub</td><td class="y">✓ (pre-Anthropic)</td><td class="n">✗</td><td class="n">✗</td><td class="n">✗</td></tr>
+          <tr><td>Provider portability</td><td class="y">excellent (mid-swap)</td><td class="y">excellent</td><td class="y">excellent</td><td>provider-tuned prompts</td><td><code>init_chat_model</code></td><td>Responses-API primary</td></tr>
+          <tr><td>Eval harness in-repo</td><td class="n">✗</td><td class="n">✗</td><td>mini_swe_runner</td><td>httpapi-exercise</td><td class="y">harbor pkg</td><td class="n">✗ (internal)</td></tr>
+          <tr><td>LSP integration</td><td class="n">✗</td><td class="n">✗</td><td class="n">✗</td><td class="y">first-class feedback</td><td class="n">✗</td><td class="n">✗</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>Decision Tree</h2>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TD
+    Start{What do you need?}
+    Start --> Code{Coding agent?}
+    Start --> Chat{Chat assistant?}
+    Start --> Research{Research / sub-agents?}
+    Code --> Strong{Need OS sandbox?}
+    Strong -- yes --> Codex[Codex CLI]
+    Strong -- no --> LSP{Want LSP feedback?}
+    LSP -- yes --> OpenCode[OpenCode]
+    LSP -- no --> Min{Minimal core?}
+    Min -- yes --> Pi[Pi]
+    Min -- no --> Hermes[Hermes Agent]
+    Chat --> Channels{Multi-channel?}
+    Channels -- yes --> OpenClaw2[OpenClaw or Hermes]
+    Channels -- no --> Pi2[Pi]
+    Research --> Sub{Real sub-agents?}
+    Sub -- yes --> DA[Deep Agents]
+    Sub -- "+mailboxes" --> Codex2[Codex CLI]
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Same Problem, Different Solutions</h2>
+
+    <div class="tabs">
+      <button data-tab="context" class="active">"Don't blow up the context"</button>
+      <button data-tab="plan">"Make the plan visible"</button>
+      <button data-tab="sub">"Spawn a sub-agent"</button>
+      <button data-tab="port">"Be portable across providers"</button>
+    </div>
+
+    <div class="tab-panel active" data-tab="context">
+      <table class="matrix">
+        <thead><tr><th>Agent</th><th>Approach</th></tr></thead>
+        <tbody>
+          <tr><td>Pi</td><td>Tree session lets you branch; main thread stays clean</td></tr>
+          <tr><td>OpenClaw</td><td>Pi's mechanism + <code>openclaw.cache-ttl</code> pruning + compaction safeguards plugin</td></tr>
+          <tr><td>Hermes</td><td>Pluggable <code>ContextEngine</code> (default <code>ContextCompressor</code> summarizes)</td></tr>
+          <tr><td>OpenCode</td><td>Two-tier: prune tool-output to 40k cap, then compact if overflowing</td></tr>
+          <tr><td>Deep Agents</td><td>Result &gt;20k tokens evicted to <code>/large_tool_results/{id}</code>, inline replaced with head/tail preview</td></tr>
+          <tr><td>Codex</td><td>Mid-turn compaction on <code>ContextWindowExceeded</code>; 3 provider-specific impls (local / remote v1 / remote v2)</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="tab-panel" data-tab="plan">
+      <table class="matrix">
+        <thead><tr><th>Agent</th><th>Approach</th></tr></thead>
+        <tbody>
+          <tr><td>Pi</td><td><code>/todos</code> community extension</td></tr>
+          <tr><td>OpenClaw</td><td>Codex-style <code>update_plan</code> tool (gated)</td></tr>
+          <tr><td>Hermes</td><td><code>todo</code> tool — in-memory store hydrated from history</td></tr>
+          <tr><td>OpenCode</td><td>Built-in <code>todowrite</code> / <code>todoread</code> — model self-managed</td></tr>
+          <tr><td>Deep Agents</td><td><code>write_todos</code> from <code>TodoListMiddleware</code></td></tr>
+          <tr><td>Codex</td><td><code>update_plan</code> emits <code>PlanUpdate</code> event; disabled in Plan mode</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="tab-panel" data-tab="sub">
+      <table class="matrix">
+        <thead><tr><th>Agent</th><th>Approach</th></tr></thead>
+        <tbody>
+          <tr><td>Pi</td><td>community extension (<code>pi-subagents</code>)</td></tr>
+          <tr><td>OpenClaw</td><td><code>sessions_spawn</code> with runtime <code>subagent</code> or <code>acp</code></td></tr>
+          <tr><td>Hermes</td><td><code>delegate_task</code> — isolated child, shared <code>IterationBudget</code></td></tr>
+          <tr><td>OpenCode</td><td><code>task</code> — child session with <code>parentID</code>, synchronous</td></tr>
+          <tr><td>Deep Agents</td><td><code>task</code> — ephemeral, parallelizable, custom personas</td></tr>
+          <tr><td>Codex</td><td>First-class: <code>agent_jobs</code>, <code>multi_agents</code>; registry + mailboxes + goals</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="tab-panel" data-tab="port">
+      <table class="matrix">
+        <thead><tr><th>Agent</th><th>Approach</th></tr></thead>
+        <tbody>
+          <tr><td>Pi</td><td><code>pi-ai</code> Context is serializable, mid-session model swap</td></tr>
+          <tr><td>OpenClaw</td><td>Pi's portability + Gateway snapshot of state</td></tr>
+          <tr><td>Hermes</td><td>3 API modes (chat_completions / anthropic_messages / codex_responses); model-agnostic in default config</td></tr>
+          <tr><td>OpenCode</td><td>OpenAPI 3.1 server → Stainless generates SDKs for many clients</td></tr>
+          <tr><td>Deep Agents</td><td>LangChain <code>init_chat_model("provider:model")</code></td></tr>
+          <tr><td>Codex</td><td>Same <code>Op</code>/<code>EventMsg</code> protocol → 5 frontends; Responses API + Anthropic/Ollama/Bedrock</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>The "Who Did What First" Map</h2>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TD
+    Claude[Claude Code<br/>Anthropic]
+    Pi
+    OC[OpenClaw]
+    Her[Hermes]
+    OCo[OpenCode]
+    DA[Deep Agents]
+    Cx[Codex CLI]
+    Claude -. AGENTS.md convention .-> Pi
+    Claude -. AGENTS.md .-> OCo
+    Claude -. AGENTS.md .-> Cx
+    Claude -. AGENTS.md .-> DA
+    Claude -. hooks schema .-> Cx
+    Claude -. hooks schema .-> Her
+    Claude -. SKILL.md progressive disclosure .-> Pi
+    Claude -. SKILL.md .-> Her
+    Claude -. SKILL.md .-> Cx
+    Claude -. SKILL.md .-> DA
+    Pi -- embedded as runtime --> OC
+    Pi -. inspires .-> OCo
+    DA -. middleware idea .-> Cx
+    Cx -. compaction patterns .-> Her
+      </div>
+    </div>
+    <p>De facto cross-agent standards: <b>AGENTS.md</b> for project memory, <b>SKILL.md</b> with frontmatter (agentskills.io), <b>MCP</b> for tool composition, <b>JSON-over-stdio hooks</b>.</p>
+  </section>
+
+  <section>
+    <h2>Design Philosophy — One Sentence Each</h2>
+    <div class="philosophy">
+      <div class="row"><b>Pi</b> — "If you want the agent to do something new, ask it to build it."</div>
+      <div class="row"><b>OpenClaw</b> — "Pi, but on every messaging surface you live on."</div>
+      <div class="row"><b>Hermes</b> — "Ship one Python class with every feature you can imagine, then teach it to improve itself."</div>
+      <div class="row"><b>OpenCode</b> — "Treat your language server as the agent's compiler."</div>
+      <div class="row"><b>Deep Agents</b> — "Compose your agent from middleware; let LangGraph hold the state."</div>
+      <div class="row"><b>Codex CLI</b> — "Don't trust the model — let the OS enforce."</div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Read the Full Deep-Dives</h2>
+    <div class="cards">
+      <a href="pi.html" class="card"><h4>Pi</h4><p>Minimal self-extending coding agent →</p></a>
+      <a href="openclaw.html" class="card"><h4>OpenClaw</h4><p>Multi-channel productization of Pi →</p></a>
+      <a href="hermes.html" class="card"><h4>Hermes Agent</h4><p>Self-improving maximalist harness →</p></a>
+      <a href="opencode.html" class="card"><h4>OpenCode</h4><p>The LSP-native coding agent →</p></a>
+      <a href="deepagents.html" class="card"><h4>Deep Agents</h4><p>LangChain's opinionated harness →</p></a>
+      <a href="codex.html" class="card"><h4>Codex CLI</h4><p>One protocol, five frontends, three sandboxes →</p></a>
+    </div>
+  </section>
+</main>
+
+<footer class="site-footer">
+  AI Agent Architecture Series · <a href="https://github.com/humanjack/ai-engineering/issues/51">umbrella issue</a>
+</footer>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script src="_shared.js"></script>
+</body>
+</html>
