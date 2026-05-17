@@ -1,0 +1,10 @@
+flowchart TD
+    L1[Layer 1 · Pi codingTools<br/>Read/Write/Edit/Bash]
+    L2[Layer 2 · OpenClaw overrides<br/>sandbox-aware versions]
+    L3[Layer 3 · OpenClaw native<br/>sessions_*, agents_*, message, cron]
+    L4[Layer 4 · Channel actions<br/>Discord/Slack/Telegram/WhatsApp tools]
+    L5[Layer 5 · Plugin tools<br/>memory_search, image_generate, ...]
+    L1 --> L2 --> L3 --> L4 --> L5 --> Merged[merged customTools]
+    Merged --> Policy[tool-policy allowlist/denylist]
+    Policy --> Sanitize[Provider schema sanitization]
+    Sanitize --> Pi[passed to Pi]

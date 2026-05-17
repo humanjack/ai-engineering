@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OpenClaw — A Multi-Channel Productization of Pi</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="_shared.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="wrap">
+    <div class="brand"><span class="brand-dot"></span> AI Agent Architecture Series</div>
+    <nav>
+      <a href="index.html">Index</a>
+      <a href="pi.html">Pi</a>
+      <a href="openclaw.html">OpenClaw</a>
+      <a href="hermes.html">Hermes</a>
+      <a href="opencode.html">OpenCode</a>
+      <a href="deepagents.html">Deep Agents</a>
+      <a href="codex.html">Codex</a>
+      <a href="comparison.html">Compare</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <h1 class="hero">OpenClaw <span style="color:var(--muted);font-weight:400">— A multi-channel productization of Pi</span></h1>
+  <p class="hero-sub">A local-first personal AI assistant daemon. Embeds Pi as its agent runtime; layers on 22+ messaging channels, 122 plugins, 56 skills, cron, hooks, MCP, and disciplined prompt caching.</p>
+  <div class="hero-meta">
+    <span class="chip"><strong>Language</strong> TypeScript (ESM)</span>
+    <span class="chip"><strong>License</strong> MIT</span>
+    <span class="chip"><strong>Embeds</strong> @earendil-works/pi-coding-agent v0.74</span>
+    <span class="chip"><a href="https://github.com/openclaw/openclaw">↗ openclaw/openclaw</a></span>
+  </div>
+
+  <section>
+    <h2>TL;DR</h2>
+    <div class="tldr">
+      <div class="card"><b>OpenClaw is Pi, productized.</b> The agent loop is literally Pi's — OpenClaw imports <code>createAgentSession</code> from <code>@earendil-works/pi-coding-agent</code> and embeds it.</div>
+      <div class="card"><b>One Gateway per host.</b> A long-lived local daemon with a WebSocket control plane. Many clients (CLI, menu bar, mobile, web UI) connect to it.</div>
+      <div class="card"><b>Everything Pi doesn't ship</b> — cron, hooks, webhooks, MCP server + client, Docker/SSH sandboxes, file-based memory, channel routing — is added as plugins under <code>extensions/</code>.</div>
+    </div>
+    <p class="callout">Analogy: If Pi is the V8 engine, OpenClaw is the entire car — body, dashboard, infotainment, and routes to 22 highway systems.</p>
+  </section>
+
+  <section>
+    <h2>1 · Where OpenClaw Sits Relative to Pi</h2>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TB
+    subgraph Clients["Clients"]
+        CLI[openclaw CLI / TUI]
+        Menu[macOS menu bar]
+        Mobile[iOS / Android Nodes]
+        Web[Web UI]
+    end
+    subgraph Gateway["Gateway (single daemon per host)"]
+        WS[WebSocket control plane]
+        Inbox[Multi-channel inbox]
+        Ctx[Context Engine plugin]
+        SessionMgr[SessionManager guarded]
+        Cron[Cron scheduler]
+        Hooks[Hooks - internal + plugin]
+        MCP[MCP server / client]
+        Sandbox[Docker / SSH / OpenShell]
+    end
+    subgraph PiEmbedded["Embedded Pi runtime"]
+        AgentSess[pi-coding-agent createAgentSession]
+        AgentLoop[Pi runLoop]
+        Tools[Custom tools + Pi codingTools]
+    end
+    subgraph Channels["Channels (22+)"]
+        WA[WhatsApp]
+        TG[Telegram]
+        Disc[Discord]
+        Slack[Slack]
+        iMsg[iMessage]
+        Etc[+17 more]
+    end
+    Clients --> WS
+    Channels --> Inbox
+    Inbox --> SessionMgr
+    SessionMgr --> AgentSess
+    AgentSess --> AgentLoop
+    AgentLoop --> Tools
+    Tools -.may use.-> Sandbox
+    Hooks -.fires around.-> AgentLoop
+      </div>
+    </div>
+    <p>The load-bearing line is <code class="code-ref">src/agents/pi-embedded-runner/run/attempt.ts:5</code>:</p>
+<pre><code>import { createAgentSession, SessionManager } from "@earendil-works/pi-coding-agent";</code></pre>
+  </section>
+
+  <section>
+    <h2>2 · A Message from WhatsApp to a Tool Call</h2>
+    <div class="diagram">
+      <div class="mermaid">
+sequenceDiagram
+    participant WA as WhatsApp
+    participant CH as Channel plugin
+    participant GW as Gateway
+    participant H1 as Internal hooks
+    participant PE as Pi-embedded runner
+    participant H2 as Plugin hooks
+    participant Pi as Pi runLoop
+    participant T as Tool (sandbox)
+    WA->>CH: "Find PDFs of receipts I sent last week"
+    CH->>GW: message:received
+    GW->>H1: fire message:received hooks
+    H1-->>GW: ok (or block)
+    GW->>PE: route to session
+    PE->>H2: before_prompt_build, before_agent_start
+    PE->>Pi: createAgentSession({...customTools, sessionManager,...})
+    Pi-->>PE: toolCall(read receipts dir)
+    PE->>H2: before_tool_call
+    H2->>T: execute (Docker sandbox if non-main)
+    T-->>H2: result
+    PE->>Pi: continue
+    Pi-->>PE: assistant "Found 3 receipts: ..."
+    PE-->>GW: message:sending
+    GW-->>CH: deliver
+    CH-->>WA: WhatsApp message
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>3 · The 5-Layer Tool Stack</h2>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TD
+    L1[Layer 1 · Pi codingTools<br/>Read/Write/Edit/Bash]
+    L2[Layer 2 · OpenClaw overrides<br/>sandbox-aware versions]
+    L3[Layer 3 · OpenClaw native<br/>sessions_*, agents_*, message, cron]
+    L4[Layer 4 · Channel actions<br/>Discord/Slack/Telegram/WhatsApp tools]
+    L5[Layer 5 · Plugin tools<br/>memory_search, image_generate, ...]
+    L1 --> L2 --> L3 --> L4 --> L5 --> Merged[merged customTools]
+    Merged --> Policy[tool-policy allowlist/denylist]
+    Policy --> Sanitize[Provider schema sanitization]
+    Sanitize --> Pi[passed to Pi]
+      </div>
+    </div>
+    <p>Profiles cap the set per persona: <code>minimal</code> / <code>coding</code> / <code>messaging</code> / <code>full</code>. Sandbox sessions get a default <i>deny</i>-list (<code>browser, canvas, nodes, cron, discord, gateway</code>).</p>
+  </section>
+
+  <section>
+    <h2>4 · Capabilities Matrix</h2>
+    <table class="matrix">
+      <thead><tr><th>Capability</th><th>How OpenClaw does it</th><th>Where to look</th></tr></thead>
+      <tbody>
+        <tr><td>Harness</td><td>Embedded Pi via SDK</td><td><code>src/agents/pi-embedded-runner/</code></td></tr>
+        <tr><td>Context mgmt</td><td>Pluggable Context Engine + cache-TTL transcript entries</td><td><code>src/context-engine/</code></td></tr>
+        <tr><td>Tool calling</td><td>5-layer tool stack with policy filter</td><td><code>src/agents/openclaw-tools.ts</code></td></tr>
+        <tr><td>Automations</td><td>Internal hooks + plugin hooks + cron + webhooks</td><td><code>src/hooks/, src/cron/</code></td></tr>
+        <tr><td>Skills</td><td>SKILL.md from 6 precedence locations</td><td><code>src/agents/skills.ts</code></td></tr>
+        <tr><td>Plugins</td><td><code>openclaw.plugin.json</code> + <code>plugin-sdk</code> barrel</td><td><code>packages/plugin-sdk/</code></td></tr>
+        <tr><td>Memory</td><td>MEMORY.md + memory/YYYY-MM-DD.md, optional vector</td><td><code>extensions/memory-core/</code></td></tr>
+        <tr><td>MCP</td><td>Server + client registry</td><td><code>src/mcp/</code></td></tr>
+        <tr><td>Sandboxing</td><td>Docker / SSH / OpenShell backends</td><td><code>src/sandbox/</code></td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>5 · Prompt Cache Discipline</h2>
+    <p>OpenClaw treats prompt caching as a <b>first-class engineering invariant</b>. From <code>AGENTS.md</code>:</p>
+    <p class="callout">"Prompt cache: deterministic ordering for maps/sets/registries/plugin lists/files/network results before model/tool payloads. Preserve old transcript bytes when possible."</p>
+    <p>This shows up as:</p>
+    <ul>
+      <li>Custom transcript entry type <code>openclaw.cache-ttl</code> marking TTL anchors inside JSONL sessions</li>
+      <li><code>isCacheTtlEligibleProvider()</code> deciding per-provider whether to emit TTL markers (Anthropic family, Kilocode-routed Anthropic, Google/Gemini)</li>
+      <li>Cache-TTL-aware pruning in <code>pi-hooks/context-pruning.ts</code></li>
+      <li>Pre-compaction reminder: "save important notes to memory before compacting"</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>6 · Automations — 4 Surfaces</h2>
+    <div class="cards">
+      <div class="card"><h4>🪝 Internal hooks</h4><p>Gateway-level events: <code>command:new/reset/stop</code>, <code>session:compact:before/after</code>, <code>message:received/sent</code>, <code>agent:bootstrap</code>, <code>gateway:startup/shutdown</code></p></div>
+      <div class="card"><h4>🧩 Plugin hooks</h4><p>Loop-level: <code>before_model_resolve</code>, <code>before_prompt_build</code>, <code>before_agent_start</code>, <code>before_tool_call / after_tool_call</code>, <code>before_compaction / after_compaction</code></p></div>
+      <div class="card"><h4>⏰ Cron</h4><p>jobs.json persistence, per-job auth profiles, isolated agent turns, heartbeat-driven wakeups, webhook delivery</p></div>
+      <div class="card"><h4>📥 Webhooks + Gmail</h4><p>Inbound HTTP triggers (<code>extensions/webhooks/</code>) + Gmail PubSub watcher</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>7 · Memory — Bounded Files First, Vectors Optional</h2>
+    <p>OpenClaw's memory is human-readable markdown by default:</p>
+    <ul>
+      <li><code>MEMORY.md</code> — persistent top-level notes</li>
+      <li><code>memory/YYYY-MM-DD.md</code> — auto-rotated daily entries</li>
+      <li><code>memory-lancedb</code> plugin — optional vector search atop the markdown</li>
+      <li><code>memory-wiki</code> plugin — Obsidian-compatible wiki link resolution</li>
+    </ul>
+    <p>Stance: <i>explicit curation > implicit infinite recall</i>.</p>
+  </section>
+
+  <section>
+    <h2>8 · Strengths & Tradeoffs</h2>
+    <div class="cards">
+      <div class="card">
+        <div class="icon">💪</div>
+        <h4>Strengths</h4>
+        <ul>
+          <li>22+ messaging channels from one daemon</li>
+          <li>Disciplined prompt-cache engineering</li>
+          <li>Plugin SDK with enforced boundaries</li>
+          <li>Pi embedding gives full event-stream control</li>
+          <li>Two well-defined hook levels</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="icon">⚖️</div>
+        <h4>Tradeoffs</h4>
+        <ul>
+          <li>Tight coupling to Pi's SDK surface</li>
+          <li>Two hook layers is a learning curve</li>
+          <li>Code plugin vs bundle plugin distinction</li>
+          <li>Large surface area (8,948 production TS files)</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>9 · Further Reading</h2>
+    <ul>
+      <li><a href="https://github.com/openclaw/openclaw">openclaw/openclaw</a></li>
+      <li><a href="https://github.com/openclaw/openclaw/blob/main/docs/pi.md">OpenClaw's own Pi integration architecture doc</a></li>
+      <li><a href="pi.html">← Pi (the runtime OpenClaw embeds)</a></li>
+      <li><a href="comparison.html">Cross-agent comparison →</a></li>
+    </ul>
+  </section>
+</main>
+<footer class="site-footer">
+  AI Agent Architecture Series · <a href="https://github.com/humanjack/ai-engineering">repo</a>
+</footer>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script src="_shared.js"></script>
+</body>
+</html>
