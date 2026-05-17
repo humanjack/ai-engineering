@@ -1,0 +1,34 @@
+flowchart TB
+    subgraph FrontDoors["Front doors"]
+        CLI[hermes CLI/TUI]
+        GW[Gateway daemon]
+        ACP[ACP server VS Code/Zed/JetBrains]
+        Batch[Batch trajectory runner]
+        MCP[MCP server inbound]
+        Cron[Cron scheduler]
+    end
+    subgraph Core["AIAgent (one Python class)"]
+        Loop[run_conversation loop]
+        Msgs[messages list OpenAI canonical]
+        Budget[IterationBudget shared w/ subagents]
+        SysPrompt[Cached system prompt]
+    end
+    subgraph Services["Services around the core"]
+        Reg[Tool Registry AST-discovered]
+        Ctx[Context Engine pluggable]
+        Mem[MemoryManager 3 channels]
+        Hooks[17 plugin hooks]
+        DB[(SQLite + FTS5)]
+        Adapters[5 API adapters]
+    end
+    subgraph Providers["Wire"]
+        CC[chat_completions]
+        AM[anthropic_messages]
+        CR[codex_responses]
+        BC[bedrock_converse]
+        CAS[codex_app_server]
+    end
+    FrontDoors --> Core
+    Core --> Services
+    Services --> Adapters
+    Adapters --> CC & AM & CR & BC & CAS

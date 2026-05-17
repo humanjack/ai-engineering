@@ -1,0 +1,28 @@
+sequenceDiagram
+    participant U as User (or gateway)
+    participant A as AIAgent
+    participant P as Plugin hooks
+    participant C as ContextEngine
+    participant LLM as LLM
+    participant T as Tool
+    U->>A: message
+    A->>C: preflight token estimate
+    alt over threshold
+        C-->>A: compress old turns
+    end
+    A->>P: pre_llm_call
+    A->>LLM: chat.completions.create
+    LLM-->>A: response w/ optional tool_calls
+    A->>A: strip XML tool blocks (defensive)
+    alt has tool_calls
+        loop tool calls
+            A->>P: pre_tool_call
+            A->>T: dispatch
+            T-->>A: result
+            A->>P: post_tool_call
+        end
+        A->>A: budget.consume(); loop
+    else final response
+        A->>P: post_llm_call
+        A-->>U: final assistant message
+    end
