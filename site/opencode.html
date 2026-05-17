@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OpenCode — The LSP-Native Coding Agent</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="_shared.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="wrap">
+    <div class="brand"><span class="brand-dot"></span> AI Agent Architecture Series</div>
+    <nav>
+      <a href="index.html">Index</a>
+      <a href="pi.html">Pi</a>
+      <a href="openclaw.html">OpenClaw</a>
+      <a href="hermes.html">Hermes</a>
+      <a href="opencode.html">OpenCode</a>
+      <a href="deepagents.html">Deep Agents</a>
+      <a href="codex.html">Codex</a>
+      <a href="comparison.html">Compare</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <h1 class="hero">OpenCode <span style="color:var(--muted);font-weight:400">— The LSP-native coding agent</span></h1>
+  <p class="hero-sub">A TypeScript server + Go TUI in one binary. Edits wait for compiler diagnostics and feed them back to the model. Tree-sitter bash permissions. Shadow-git snapshots. No vector DB.</p>
+  <div class="hero-meta">
+    <span class="chip"><strong>Server</strong> TypeScript / Bun</span>
+    <span class="chip"><strong>TUI (v1)</strong> Go / Bubble Tea</span>
+    <span class="chip"><strong>Pinned to</strong> sst/opencode@v1.0.0</span>
+    <span class="chip"><a href="https://github.com/sst/opencode">↗ sst/opencode</a></span>
+  </div>
+
+  <section>
+    <h2>TL;DR</h2>
+    <div class="tldr">
+      <div class="card"><b>Two cooperating processes, one binary.</b> TS Hono server (Bun) owns the agent loop. Go Bubble Tea TUI is embedded into the binary, extracted on first launch, <code>Bun.spawn</code>'d as a child connected over localhost HTTP/SSE.</div>
+      <div class="card"><b>LSP is a model-feedback channel.</b> After every edit, the tool synchronously waits up to 3s for diagnostics and embeds compiler errors into the tool result. The model sees the type errors and self-corrects next step.</div>
+      <div class="card"><b>Three distinctive engineering bets:</b> shadow-git snapshots for free revertability, tree-sitter bash permissions for per-AST-node safety, and <code>ripgrep</code>-only retrieval (no embeddings).</div>
+    </div>
+    <p class="callout">Analogy: OpenCode is the agent that pair-programs with your language server. Where most agents treat code as text, OpenCode treats it as a tree that the compiler can talk back about.</p>
+  </section>
+
+  <section>
+    <h2>1 · Two Processes, One Binary</h2>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TB
+    User((User keyboard)) --> TUI
+    subgraph Binary["one shipped binary"]
+        subgraph Server["TS Hono server (Bun)"]
+            Loop[session/prompt.ts:225-427<br/>explicit while(true)]
+            Tools[Tool registry]
+            LSP[LSP clients]
+            MCPm[MCP clients]
+            Plugins[Plugins API]
+            Storage[JSON storage]
+            Bus[Bus pub/sub]
+        end
+        subgraph TUIBlock["Go TUI (Bubble Tea v2)"]
+            Render[Renderer]
+            Input[Input handler]
+            SSEcli[SSE client]
+            Long[Long-poll inverse RPC]
+        end
+    end
+    Embed[Bun.embeddedFiles<br/>extract to cache + Bun.spawn] --> TUIBlock
+    LLM[(LLM Provider)]
+    LSPsv[(LSP servers)]
+    MCPsv[(MCP servers)]
+    TUI -- "POST /session/{id}/chat" --> Loop
+    Loop --> LLM
+    Loop --> Tools --> LSP --> LSPsv
+    Loop --> Tools --> MCPm --> MCPsv
+    Bus -- "SSE /event" --> SSEcli
+    Server -. "callTui (queue)" .-> Long
+    Long -. "POST /tui/control/response" .-> Server
+      </div>
+    </div>
+    <p>The wiring lives in <code class="code-ref">packages/opencode/src/cli/cmd/tui.ts:107-156</code>: the Go TUI is compiled into the JS binary via <code>Bun.embeddedFiles</code>, extracted on first launch, spawned as a child process with <code>OPENCODE_SERVER</code> injected.</p>
+  </section>
+
+  <section>
+    <h2>2 · The Cleverest Detail — Inverse RPC Over Long-Poll</h2>
+    <p>HTTP doesn't push, so OpenCode does <b>inverse RPC over long-poll</b> in <code class="code-ref">packages/opencode/src/server/tui.ts:1-69</code>:</p>
+<pre><code>const request = new AsyncQueue&lt;TuiRequest&gt;()
+const response = new AsyncQueue&lt;any&gt;()
+
+export async function callTui(ctx: Context) {
+  const body = await ctx.req.json()
+  request.push({ path: ctx.req.path, body })
+  return response.next()  // blocks until TUI POSTs back
+}</code></pre>
+    <p>The TUI sits in a loop hitting <code>GET /tui/control/next</code>. When the server queues work, the next GET drains it; the TUI processes and POSTs to <code>/tui/control/response</code>. Bidirectional comms without WebSockets.</p>
+  </section>
+
+  <section>
+    <h2>3 · Execution Loop — Explicit, Step-By-Step</h2>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TD
+    Start[New user message]
+    A[1 · Filter compacted + inject mode-switch reminders]
+    B[2 · Resolve system prompt<br/>provider header + role + env + AGENTS.md]
+    C[3 · Resolve tools<br/>built-in + custom + MCP, filtered by agent perms]
+    D[4 · Plugin.trigger chat.params]
+    E[5 · streamText stopWhen=stepCountIs 1]
+    F{finishReason?}
+    G[6 · Stream-process MessageV2.Parts<br/>dispatch tool calls]
+    H[7 · Queued user input?]
+    I[Return]
+    Retry[8 · Retry w/ exp backoff]
+    Start --> A --> B --> C --> D --> E --> F
+    F -- "tool-calls" --> G --> H
+    F -- "stop" --> H
+    H -- yes --> A
+    H -- no --> I
+    E -.error.-> Retry --> E
+      </div>
+    </div>
+    <p><code>stopWhen: stepCountIs(1)</code> is intentional — it surrenders the SDK's loop so OpenCode can run snapshots, plugin hooks, and tool dispatches between every step.</p>
+  </section>
+
+  <section>
+    <h2>4 · LSP as Model Feedback — The Defining Behavior</h2>
+    <p>In <code class="code-ref">packages/opencode/src/tool/edit.ts:104-116</code>:</p>
+<pre><code>await LSP.touchFile(filePath, /* waitForDiagnostics */ true)
+const diagnostics = await LSP.diagnostics()
+const errors = diagnostics
+  .filter(d =&gt; d.severity === 1)
+  .map(d =&gt; `${d.range.start.line}: ${d.message}`)
+  .join("\n")
+return { output: `${editSummary}\n\nDiagnostics:\n${errors}`, ... }</code></pre>
+    <p>After every edit, the tool blocks up to 3s for the language server to reply, then embeds compiler errors directly into the tool result. The model sees <code>"unused import 'foo'"</code> immediately and can fix it on the next step without being asked.</p>
+    <p>Plus two LSP tools the model can invoke directly:</p>
+    <ul>
+      <li><code>lsp-diagnostics</code> — proactively fetch all diagnostics</li>
+      <li><code>lsp-hover</code> — ask for type info at a location</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>5 · Tree-Sitter Bash Permissions</h2>
+    <p>Naïve regex bash perms break on pipes, subshells, and string boundaries. OpenCode uses <code>web-tree-sitter</code> with the bash grammar to extract every <code>command</code> node, then matches each literal command string against the agent's wildcard set:</p>
+<pre><code>const tree = await parser().then(p =&gt; p.parse(params.command))
+const permissions = await Agent.get(ctx.agent).then(x =&gt; x.permission.bash)
+for (const node of tree.rootNode.descendantsOfType("command")) {
+  // ... check each command against agent's wildcard rules
+}</code></pre>
+    <p>For <code>rg pattern | grep todo | xargs rm -rf</code>, each of the four commands is checked independently. Catches escapes regex misses.</p>
+  </section>
+
+  <section>
+    <h2>6 · Shadow-Git Snapshots</h2>
+    <p>Every session can revert via a <b>shadow git repository</b>:</p>
+<pre><code>GIT_DIR=$XDG_DATA/opencode/snapshot/$projectID
+GIT_WORK_TREE=$worktree</code></pre>
+    <p>Every assistant turn commits to the shadow repo; <code>Snapshot.patch(hash)</code> reverts. Zero new infrastructure — just clever git usage. (Tied to git; non-git projects skip snapshots.)</p>
+  </section>
+
+  <section>
+    <h2>7 · The 5 Automation Surfaces</h2>
+    <table class="matrix">
+      <thead><tr><th>Surface</th><th>Format</th><th>Loaded from</th><th>Purpose</th></tr></thead>
+      <tbody>
+        <tr><td>Slash commands</td><td>Markdown + frontmatter</td><td><code>.opencode/command/*.md</code></td><td>Templated prompts</td></tr>
+        <tr><td>Custom agents</td><td>Markdown + frontmatter</td><td><code>.opencode/agent/*.md</code></td><td><code>mode: primary | subagent | all</code></td></tr>
+        <tr><td>File-tool drop-ins</td><td>TypeScript module</td><td><code>.opencode/tool/*.ts</code></td><td>Use <code>@opencode-ai/plugin</code></td></tr>
+        <tr><td>Plugins</td><td>npm or <code>file://</code></td><td><code>config.plugin</code></td><td>Hooks: <code>chat.params</code>, <code>tool.execute.before/after</code></td></tr>
+        <tr><td>Experimental hooks</td><td>shell commands</td><td><code>config.experimental.hook</code></td><td><code>file_edited</code> + <code>session_completed</code></td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>8 · Provider-Specific System Prompts</h2>
+    <table class="matrix">
+      <thead><tr><th>Provider</th><th>Prompt file</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td>GPT-5 family</td><td><code>codex.txt</code></td><td>Tuned for Codex style</td></tr>
+        <tr><td>Gemini</td><td><code>gemini.txt</code></td><td></td></tr>
+        <tr><td>Claude</td><td><code>anthropic.txt</code></td><td>Plus "anthropic_spoof" header for certain features</td></tr>
+        <tr><td>Anything else</td><td><code>qwen.txt</code></td><td>Default fallback</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>9 · Capabilities Matrix</h2>
+    <table class="matrix">
+      <tbody>
+        <tr><td>Harness</td><td>TS Hono server + Go TUI as child process</td></tr>
+        <tr><td>Context</td><td>Prune (40k cap on tool output) → Compact → 2-block cache-friendly system prompt</td></tr>
+        <tr><td>Tool calling</td><td>Tool.define factory; 11 built-ins + custom + MCP; tree-sitter bash perms</td></tr>
+        <tr><td>Automations</td><td>5 surfaces — commands / agents / file-tools / plugins / shell hooks</td></tr>
+        <tr><td>Memory</td><td>AGENTS.md walk-up + shadow-git + FileTime + ripgrep tree</td></tr>
+        <tr><td>Planning</td><td>3 built-in modes (build/plan/general) + per-mode permission lockdown</td></tr>
+        <tr><td>Sub-agents</td><td>task tool spawns child session w/ parentID; synchronous</td></tr>
+        <tr><td>LSP integration</td><td>First-class — edit waits for diagnostics; lsp-hover, lsp-diagnostics tools</td></tr>
+        <tr><td>MCP</td><td>Both stdio + remote; tool names namespaced server_tool</td></tr>
+        <tr><td>Testing</td><td>Unit tests; httpapi-exercise.ts contract test in 3 modes</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>10 · Strengths & Tradeoffs</h2>
+    <div class="cards">
+      <div class="card">
+        <div class="icon">💪</div>
+        <h4>Strengths</h4>
+        <ul>
+          <li>LSP-as-feedback is genuinely novel</li>
+          <li>Tree-sitter bash perms beat regex</li>
+          <li>Shadow-git = free revertability</li>
+          <li>OpenAPI → many clients</li>
+          <li>Provider-tuned system prompts</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="icon">⚖️</div>
+        <h4>Tradeoffs</h4>
+        <ul>
+          <li>Two-language build/release complexity</li>
+          <li>Long-poll control channel is single-tenant</li>
+          <li>JSON storage doesn't scale (SQLite migration in progress)</li>
+          <li>5 hook surfaces is a lot</li>
+          <li>Plugins are unsandboxed Bun imports</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>11 · Two OpenCodes — Mind the Lineage</h2>
+    <table class="matrix">
+      <thead><tr><th>Repo</th><th>Language</th><th>Status</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td><code>opencode-ai/opencode</code></td><td>Pure Go</td><td><b>Archived</b> 2025-09-17</td><td>Continued as <a href="https://github.com/charmbracelet/crush">charmbracelet/crush</a></td></tr>
+        <tr><td><code>sst/opencode</code></td><td>TS (Bun) + Go TUI</td><td>Active</td><td>The "real" OpenCode today; this deep-dive's subject</td></tr>
+      </tbody>
+    </table>
+    <p>If you read GitHub and feel confused — the active project is <code>sst/opencode</code>. The modern <code>dev</code> branch has dropped the Go TUI for <code>@opentui/solid</code> (SolidJS terminal renderer), but the server-side design persists.</p>
+  </section>
+
+  <section>
+    <h2>12 · Further Reading</h2>
+    <ul>
+      <li><a href="https://github.com/sst/opencode">sst/opencode</a></li>
+      <li><a href="https://github.com/opencode-ai/opencode">opencode-ai/opencode (archived)</a></li>
+      <li><a href="https://github.com/charmbracelet/crush">charmbracelet/crush</a> — successor of the original</li>
+      <li><a href="comparison.html">Cross-agent comparison →</a></li>
+    </ul>
+  </section>
+</main>
+<footer class="site-footer">
+  AI Agent Architecture Series · <a href="https://github.com/humanjack/ai-engineering">repo</a>
+</footer>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script src="_shared.js"></script>
+</body>
+</html>

@@ -1,0 +1,18 @@
+flowchart TD
+    Start[New user message]
+    A[1 · Filter compacted + inject mode-switch reminders]
+    B[2 · Resolve system prompt<br/>provider header + role + env + AGENTS.md]
+    C[3 · Resolve tools<br/>built-in + custom + MCP, filtered by agent perms]
+    D[4 · Plugin.trigger chat.params]
+    E[5 · streamText stopWhen=stepCountIs 1]
+    F{finishReason?}
+    G[6 · Stream-process MessageV2.Parts<br/>dispatch tool calls]
+    H[7 · Queued user input?]
+    I[Return]
+    Retry[8 · Retry w/ exp backoff]
+    Start --> A --> B --> C --> D --> E --> F
+    F -- "tool-calls" --> G --> H
+    F -- "stop" --> H
+    H -- yes --> A
+    H -- no --> I
+    E -.error.-> Retry --> E

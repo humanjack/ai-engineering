@@ -1,0 +1,30 @@
+flowchart TB
+    User((User keyboard)) --> TUI
+    subgraph Binary["one shipped binary"]
+        subgraph Server["TS Hono server (Bun)"]
+            Loop[session/prompt.ts:225-427<br/>explicit while(true)]
+            Tools[Tool registry]
+            LSP[LSP clients]
+            MCPm[MCP clients]
+            Plugins[Plugins API]
+            Storage[JSON storage]
+            Bus[Bus pub/sub]
+        end
+        subgraph TUIBlock["Go TUI (Bubble Tea v2)"]
+            Render[Renderer]
+            Input[Input handler]
+            SSEcli[SSE client]
+            Long[Long-poll inverse RPC]
+        end
+    end
+    Embed[Bun.embeddedFiles<br/>extract + Bun.spawn] --> TUIBlock
+    LLM[(LLM Provider)]
+    LSPsv[(LSP servers)]
+    MCPsv[(MCP servers)]
+    TUI -- "POST /session/{id}/chat" --> Loop
+    Loop --> LLM
+    Loop --> Tools --> LSP --> LSPsv
+    Loop --> Tools --> MCPm --> MCPsv
+    Bus -- "SSE /event" --> SSEcli
+    Server -. "callTui (queue)" .-> Long
+    Long -. "POST /tui/control/response" .-> Server
