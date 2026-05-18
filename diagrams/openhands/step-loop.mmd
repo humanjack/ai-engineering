@@ -1,0 +1,28 @@
+sequenceDiagram
+    participant U as User
+    participant C as LocalConversation
+    participant S as ConversationState (EventLog)
+    participant A as Agent.step()
+    participant Co as Condenser
+    participant L as LLM (LiteLLM)
+    participant H as HookManager
+    participant T as Tool
+    U->>C: send_message(text)
+    C->>H: run_user_prompt_submit()  (can block)
+    C->>S: append MessageEvent
+    C->>C: run() loop until terminal
+    loop until done or stuck
+        C->>A: step(state)
+        A->>Co: condense if oversized
+        A->>L: completion(messages, tools)
+        L-->>A: streamed deltas + tool calls
+        A->>S: append ActionEvent(s)
+        A->>H: run_pre_tool_use()  (can block)
+        A->>T: execute (parallel up to limit)
+        T-->>A: ObservationEvent
+        A->>H: run_post_tool_use()
+        A->>S: append ObservationEvent(s)
+        Note over A: StuckDetector checks 5 patterns
+    end
+    C->>H: run_stop()
+    C-->>U: final MessageEvent

@@ -1,6 +1,6 @@
 # AI Agent Architecture Series
 
-Educational deep-dives on six open-source AI agents — grounded in source code, illustrated with diagrams, and synthesized into a comparison guide.
+Educational deep-dives on seven open-source AI agents — grounded in source code, illustrated with diagrams, and synthesized into a comparison guide.
 
 ## The Agents
 
@@ -12,6 +12,7 @@ Educational deep-dives on six open-source AI agents — grounded in source code,
 | 4 | **OpenCode** | LSP-native coding agent — edits wait for diagnostics; tree-sitter bash perms | [opencode.md](opencode.md) |
 | 5 | **Deep Agents** | LangChain's opinionated middleware-composable harness | [deepagents.md](deepagents.md) |
 | 6 | **Codex CLI** | OpenAI's Rust agent — one protocol, five frontends, three-layer OS sandboxes | [codex.md](codex.md) |
+| 7 | **OpenHands** | Event-sourced agent with a FastAPI sandbox — three repos, one stack, VS Code inside Docker | [openhands.md](openhands.md) |
 
 → **[Cross-agent comparison](comparison.md)** — matrices, decision tree, design philosophies side-by-side.
 
@@ -20,7 +21,7 @@ Educational deep-dives on six open-source AI agents — grounded in source code,
 Each agent has a dedicated HTML page with rendered Mermaid diagrams, tabbed sections, and inline code references. Open from `site/`:
 
 - [`site/index.html`](../../site/index.html) — landing page
-- `site/pi.html` · `site/openclaw.html` · `site/hermes.html` · `site/opencode.html` · `site/deepagents.html` · `site/codex.html`
+- `site/pi.html` · `site/openclaw.html` · `site/hermes.html` · `site/opencode.html` · `site/deepagents.html` · `site/codex.html` · `site/openhands.html`
 - [`site/comparison.html`](../../site/comparison.html) — cross-agent matrix
 
 ## Diagrams

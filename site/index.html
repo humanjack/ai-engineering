@@ -41,6 +41,7 @@
       <a href="opencode.html">OpenCode</a>
       <a href="deepagents.html">Deep Agents</a>
       <a href="codex.html">Codex</a>
+      <a href="openhands.html">OpenHands</a>
       <a href="comparison.html">Compare</a>
     </nav>
   </div>
@@ -49,11 +50,11 @@
 <main>
   <div class="hero-banner">
     <h1 class="hero">How AI Agents <span style="color:var(--muted);font-weight:400">actually work</span></h1>
-    <p class="hero-sub" style="margin: 0 auto; font-size: 19px;">Six deep-dives on real open-source agent codebases. Grounded in source. Illustrated with diagrams. Synthesized into a comparison guide.</p>
+    <p class="hero-sub" style="margin: 0 auto; font-size: 19px;">Seven deep-dives on real open-source agent codebases. Grounded in source. Illustrated with diagrams. Synthesized into a comparison guide.</p>
   </div>
 
   <section>
-    <h2>The Six Agents</h2>
+    <h2>The Seven Agents</h2>
     <div class="agent-grid">
 
       <div class="agent-card">
@@ -104,6 +105,14 @@
         <a href="codex.html" class="cta">Read deep-dive →</a>
       </div>
 
+      <div class="agent-card">
+        <div class="num">07</div>
+        <h3>OpenHands</h3>
+        <span class="lang">Python + TS · All-Hands-AI/OpenHands</span>
+        <p class="tagline">Event-sourced agent with a FastAPI sandbox. Three repos, one stack. VS Code inside Docker. Replay, fork, encrypted persistence. 77.6 SWE-Bench Verified.</p>
+        <a href="openhands.html" class="cta">Read deep-dive →</a>
+      </div>
+
     </div>
   </section>
 
@@ -116,6 +125,7 @@
       <dt>Code-editing agent with type-checking?</dt><dd><a href="opencode.html">OpenCode</a> — LSP feedback in the loop</dd>
       <dt>Middleware-composable, with evals?</dt><dd><a href="deepagents.html">Deep Agents</a> — LangGraph + `harbor`</dd>
       <dt>Need real OS-enforced sandboxing?</dt><dd><a href="codex.html">Codex CLI</a> — 3 layers per platform</dd>
+      <dt>Want event-sourced state and VS Code in the sandbox?</dt><dd><a href="openhands.html">OpenHands</a> — replay/fork + ~40-router FastAPI in the box</dd>
     </dl>
   </section>
 
@@ -130,6 +140,7 @@ flowchart TD
     Start --> Research{Research / sub-agents?}
     Code --> Strong{Need OS sandbox?}
     Strong -- yes --> Codex[Codex CLI]
+    Strong -- "VS Code inside" --> OpenHands[OpenHands]
     Strong -- no --> LSP{Want LSP feedback?}
     LSP -- yes --> OpenCode[OpenCode]
     LSP -- no --> Min{Minimal core?}
@@ -141,6 +152,7 @@ flowchart TD
     Research --> Sub{Real sub-agents?}
     Sub -- yes --> DA[Deep Agents]
     Sub -- "+mailboxes" --> Codex2[Codex CLI]
+    Sub -- "+replay/fork" --> OpenHands2[OpenHands]
       </div>
     </div>
   </section>

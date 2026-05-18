@@ -1,0 +1,407 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OpenHands — Event-Sourced Agent With a FastAPI Sandbox</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="_shared.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="wrap">
+    <div class="brand"><span class="brand-dot"></span> AI Agent Architecture Series</div>
+    <nav>
+      <a href="index.html">Index</a>
+      <a href="pi.html">Pi</a>
+      <a href="openclaw.html">OpenClaw</a>
+      <a href="hermes.html">Hermes</a>
+      <a href="opencode.html">OpenCode</a>
+      <a href="deepagents.html">Deep Agents</a>
+      <a href="codex.html">Codex</a>
+      <a href="openhands.html">OpenHands</a>
+      <a href="comparison.html">Compare</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <h1 class="hero">OpenHands <span style="color:var(--muted);font-weight:400">— event-sourced agent with a FastAPI sandbox</span></h1>
+  <p class="hero-sub">A three-repo polystack. The flagship is FastAPI + React; the agent loop lives in <code>agent-sdk</code>; the sandbox runs its own ~40-router FastAPI server with VS Code inside Docker. Every action and observation is an immutable event.</p>
+  <div class="hero-meta">
+    <span class="chip"><strong>Language</strong> Python 62% · TS 36%</span>
+    <span class="chip"><strong>License</strong> MIT (core) · Polyform (enterprise)</span>
+    <span class="chip"><strong>Latest</strong> 1.7.0 (May 2026)</span>
+    <span class="chip"><strong>SWE-Bench Verified</strong> 77.6</span>
+    <span class="chip"><a href="https://github.com/All-Hands-AI/OpenHands">↗ All-Hands-AI/OpenHands</a></span>
+  </div>
+
+  <section>
+    <h2>TL;DR</h2>
+    <div class="tldr">
+      <div class="card"><b>Event-sourcing as ground truth.</b> Every action and observation is a frozen Pydantic event in a persisted <code>EventLog</code>. Replay, <code>fork()</code>, <code>rerun_actions()</code>, and encrypted persistence all fall out of one design choice — most other agents hold an ephemeral message array.</div>
+      <div class="card"><b>The sandbox is its own FastAPI app.</b> <code>openhands-agent-server</code> runs <i>inside</i> the Docker container with ~40 routers (terminal, file, git, VS Code, bash, desktop, hooks, MCP). It's a PyInstaller binary the host SDK talks to over HTTP/WS — not a thin <code>docker exec</code> wrapper.</div>
+      <div class="card"><b>Local/remote symmetry via one factory.</b> <code>Conversation.__new__()</code> inspects the workspace and returns either <code>LocalConversation</code> or <code>RemoteConversation</code> — same API, remote variant proxies every call to the in-sandbox server. Laptop ↔ cloud is one argument.</div>
+    </div>
+    <p class="callout">Analogy: OpenHands is the agent built like a distributed system. Events are immutable, the sandbox is a service, and Local/Remote are interchangeable transports. Where Codex makes the OS enforce, OpenHands makes the architecture enforce.</p>
+  </section>
+
+  <section>
+    <h2>1 · The Stack at a Glance</h2>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TB
+    subgraph Front["frontend/ — React Router v7 SPA"]
+        UI[Components · Zustand · TanStack Query]
+        Sock[socket.io-client]
+    end
+    subgraph App["openhands/app_server — FastAPI"]
+        V1[v1_router /api/v1<br/>13 sub-routers]
+        MCPep[MCP server mounted @ /mcp]
+        Sbx[sandbox service<br/>docker / process / remote]
+        Lease[ConversationLease]
+    end
+    subgraph SDK["agent-sdk repo — openhands-sdk"]
+        Conv[Conversation factory __new__]
+        Local[LocalConversation 1063 LOC]
+        Remote[RemoteConversation]
+        Agent[Agent agent.py:235]
+        State[ConversationState + EventLog]
+        LLM[LLM via LiteLLM llm.py:118]
+        Cond[Condenser]
+        Hooks[HookManager]
+        Skills[Skills · Subagents]
+    end
+    subgraph Box["Docker / cloud sandbox"]
+        ASrv[openhands-agent-server<br/>FastAPI · ~40 routers]
+        Term[TerminalSession]
+        FE[FileEditor]
+        VSC[VS Code]
+        Browser[BrowserUse]
+    end
+    UI <--> V1
+    Sock <--> V1
+    V1 --> Conv
+    Conv --> Local
+    Conv --> Remote
+    Remote -.HTTP/WS.-> ASrv
+    Local --> Agent
+    Agent --> LLM
+    Agent --> Cond
+    Agent --> Hooks
+    Agent --> State
+    ASrv --> Term
+    ASrv --> FE
+    ASrv --> VSC
+    ASrv --> Browser
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>2 · The v1.0 Repo Split — Mind The 404s</h2>
+    <p>In December 2025, the OpenDevin-era monolith was carved into three repos. Old tutorials point at files that don't exist anymore.</p>
+    <table class="matrix">
+      <thead><tr><th>Lived in old <code>openhands/</code></th><th>Now lives in</th></tr></thead>
+      <tbody>
+        <tr><td><code>controller/</code></td><td><code>agent-sdk/openhands-sdk/openhands/sdk/conversation/</code></td></tr>
+        <tr><td><code>agenthub/</code> (CodeActAgent etc.)</td><td><code>agent-sdk/openhands-sdk/openhands/sdk/agent/</code> — one <code>Agent</code> class</td></tr>
+        <tr><td><code>runtime/</code></td><td><code>agent-sdk/openhands-agent-server/</code> — full FastAPI server</td></tr>
+        <tr><td><code>events/</code></td><td><code>agent-sdk/openhands-sdk/openhands/sdk/event/</code></td></tr>
+        <tr><td><code>llm/</code></td><td><code>agent-sdk/openhands-sdk/openhands/sdk/llm/</code></td></tr>
+        <tr><td><code>microagent/</code></td><td><code>agent-sdk/openhands-sdk/openhands/sdk/skills/</code> — renamed</td></tr>
+        <tr><td><code>core/main.py</code></td><td><code>OpenHands-CLI/openhands_cli/</code></td></tr>
+      </tbody>
+    </table>
+    <p>Namespace sharing: <code>openhands/__init__.py</code> uses <code>pkgutil.extend_path()</code> so the three packages still live under <code>openhands.*</code>.</p>
+  </section>
+
+  <section>
+    <h2>3 · Event-Sourcing as Ground Truth</h2>
+    <p>The conversation is a log of immutable events, not a list of messages. Every event subclasses <code>Event</code> (<code>event/base.py:16</code>); transcript-participating events subclass <code>LLMConvertibleEvent</code> with an abstract <code>to_llm_message()</code>.</p>
+    <table class="matrix">
+      <thead><tr><th>Event</th><th>Purpose</th></tr></thead>
+      <tbody>
+        <tr><td><code>MessageEvent</code></td><td>User or assistant text turn</td></tr>
+        <tr><td><code>ActionEvent</code></td><td>One tool call. Fields: <code>thought</code>, <code>reasoning_content</code>, <code>tool_name</code>, <code>tool_call_id</code>, <code>security_risk</code>, <code>critic_result</code>, <code>summary</code></td></tr>
+        <tr><td><code>ObservationEvent</code></td><td>Tool result; <code>action_id</code> links back</td></tr>
+        <tr><td><code>SystemPromptEvent</code></td><td>System prompt versioning</td></tr>
+      </tbody>
+    </table>
+    <p>What this buys:</p>
+    <ul>
+      <li><b>Fork</b> — <code>LocalConversation.fork()</code> snapshots and replays the event log into a new state</li>
+      <li><b>Rerun</b> — <code>rerun_actions()</code> re-executes a slice without re-prompting the model</li>
+      <li><b>Encrypted persistence</b> — <code>ConversationState</code> accepts a <code>_cipher</code>; logs at rest are encrypted</li>
+      <li><b>Discriminated polymorphism</b> — Events, Agents (<code>agent_kind: "openhands" | "acp"</code>), Workspaces, Sandboxes all (de)serialize via Pydantic's <code>DiscriminatedUnionMixin</code></li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>4 · The Step Loop</h2>
+    <div class="diagram">
+      <div class="mermaid">
+sequenceDiagram
+    participant U as User
+    participant C as LocalConversation
+    participant S as ConversationState (EventLog)
+    participant A as Agent.step()
+    participant Co as Condenser
+    participant L as LLM (LiteLLM)
+    participant H as HookManager
+    participant T as Tool
+    U->>C: send_message(text)
+    C->>H: run_user_prompt_submit()  (can block)
+    C->>S: append MessageEvent
+    C->>C: run() loop until terminal
+    loop until done or stuck
+        C->>A: step(state)
+        A->>Co: condense if oversized
+        A->>L: completion(messages, tools)
+        L-->>A: streamed deltas + tool calls
+        A->>S: append ActionEvent(s)
+        A->>H: run_pre_tool_use()  (can block)
+        A->>T: execute (parallel up to limit)
+        T-->>A: ObservationEvent
+        A->>H: run_post_tool_use()
+        A->>S: append ObservationEvent(s)
+        Note over A: StuckDetector checks 5 patterns
+    end
+    C->>H: run_stop()
+    C-->>U: final MessageEvent
+      </div>
+    </div>
+    <p>Loop in <code>conversation/impl/local_conversation.py:552</code> (1063 LOC total). <code>max_iterations</code> default 500. <code>Agent.step()</code> at <code>agent.py:372</code> with nested <code>_ActionBatch</code> dataclass batching tool calls within one model turn.</p>
+  </section>
+
+  <section>
+    <h2>5 · Local ↔ Remote Conversation Symmetry</h2>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TB
+    Call[Conversation agent, workspace, ...]
+    Factory{Conversation.__new__<br/>conversation.py:56}
+    LocalC[LocalConversation]
+    RemoteC[RemoteConversation]
+    LocalWS[LocalWorkspace<br/>subprocess + shutil]
+    RemoteWS[AsyncRemoteWorkspace<br/>HTTP client]
+    AS[openhands-agent-server<br/>inside sandbox]
+    Same[Same public API:<br/>send_message · run · pause<br/>fork · rerun_actions]
+    Call --> Factory
+    Factory -- workspace.is_remote == false --> LocalC --> LocalWS
+    Factory -- workspace.is_remote == true --> RemoteC --> RemoteWS -.HTTP/WS.-> AS
+    LocalC --> Same
+    RemoteC --> Same
+      </div>
+    </div>
+    <p>Same call site, same returned API. What changes is the transport. <code>RemoteConversation</code> proxies every call to the in-sandbox <code>openhands-agent-server</code>; rather than maintain two control loops, OpenHands runs one and lets the workspace differ.</p>
+  </section>
+
+  <section>
+    <h2>6 · The In-Sandbox Agent-Server</h2>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart LR
+    Host[Host: RemoteConversation]
+    subgraph Container["Docker / KVM / Remote VM"]
+        API[api.py FastAPI app]
+        subgraph Routers["~20 routers"]
+            R1[conversation_router]
+            R2[bash_router]
+            R3[file_router]
+            R4[git_router]
+            R5[mcp_router]
+            R6[vscode_router]
+            R7[hooks_router]
+            R8[skills_router]
+            R9[event_router]
+            R10[desktop_router]
+        end
+        subgraph Services["services"]
+            S1[bash_service]
+            S2[conversation_service]
+            S3[event_service]
+            S4[hooks_service]
+            S5[tool_preload_service]
+            S6[vscode_service]
+            S7[desktop_service]
+        end
+        Persist[persistence/]
+        Sock[sockets — websockets]
+    end
+    Host -.HTTP REST.-> API
+    Host -.WS.-> Sock
+    API --> Routers
+    Routers --> Services
+    Services --> Persist
+      </div>
+    </div>
+    <p>Compiled to a single PyInstaller binary (<code>agent-server.spec</code>) and installed into the Docker image. Three sandbox backends in <code>app_server/sandbox/</code>: <code>docker</code> (default, KVM in 1.7), <code>process</code> (no isolation, trusted dev), <code>remote</code> (cloud).</p>
+    <p class="callout"><b>Why a server inside the sandbox?</b> (1) VS Code lives there — <code>vscode_router</code> + extensions are shipped, the host tunnels in. (2) Tool execution is uniform — local and remote conversations talk to the same FastAPI interface. (3) ACP variant: <code>conversation_router_acp</code> lets external Anthropic-style agents drive it.</p>
+  </section>
+
+  <section>
+    <h2>7 · One Agent, Four Sideways Extension Axes</h2>
+    <p>No agent zoo. The single concrete agent is <code>Agent(CriticMixin, ResponseDispatchMixin, AgentBase)</code> at <code>agent.py:235</code>. Specialization happens via:</p>
+    <table class="matrix">
+      <thead><tr><th>Vector</th><th>Where</th><th>Example</th></tr></thead>
+      <tbody>
+        <tr><td><b>Tools</b></td><td><code>Agent(tools=[...])</code></td><td><code>BrowserToolSet</code> opt-in, <code>TaskToolSet</code> when <code>enable_sub_agents=True</code></td></tr>
+        <tr><td><b>Presets</b></td><td><code>openhands-tools/openhands/tools/preset/</code></td><td><code>default.py</code>, <code>gpt5.py</code>, <code>gemini.py</code>, <code>planning.py</code></td></tr>
+        <tr><td><b>Skills (YAML)</b></td><td><code>.openhands/skills/*.md</code></td><td><code>CodeActAgent</code> is now a skill name, not a class</td></tr>
+        <tr><td><b>Subagent registry</b></td><td><code>subagent/registry.py</code></td><td><code>register_agent()</code>, file-based YAML factories</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>8 · Context Management — Two Orthogonal Components</h2>
+    <h3>Condenser — "the context is too big"</h3>
+    <p>Default is <code>LLMSummarizingCondenser</code> (<code>condenser/llm_summarizing_condenser.py</code>, 282 LOC). Algorithm: find forgettable window → LLM-summarize → replace with one summary event, <b>preserving the first <code>keep_first</code></b> for prompt-cache hits.</p>
+    <table class="matrix">
+      <thead><tr><th>Field</th><th>Default</th><th>Role</th></tr></thead>
+      <tbody>
+        <tr><td><code>max_size</code></td><td>240 SDK / 80 preset</td><td>Trigger threshold</td></tr>
+        <tr><td><code>keep_first</code></td><td>2 SDK / 4 preset</td><td>Cache-stable prefix</td></tr>
+        <tr><td><code>minimum_progress</code></td><td>0.1</td><td>Don't bother if we'd evict too little</td></tr>
+        <tr><td><code>hard_context_reset_max_retries</code></td><td>5</td><td>Fallback for runaway context</td></tr>
+      </tbody>
+    </table>
+    <h3>Stuck Detector — "the agent is in a loop"</h3>
+    <p><code>stuck_detector.py</code> (429 LOC) detects five patterns: repeating A→O pairs, action+repeated errors, agent monologue (no tools for N turns), A-B-A-B alternation, context-window errors despite condensation. On match → status <code>STUCK</code>, run() exits.</p>
+  </section>
+
+  <section>
+    <h2>9 · LLM Layer — LiteLLM, ~50 Providers</h2>
+    <p><code>llm/llm.py</code> is 1317 LOC. <code>class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin)</code> at line 118, with ~50 config fields.</p>
+    <table class="matrix">
+      <tbody>
+        <tr><td><code>completion()</code> at line 631</td><td>Chat Completions API</td></tr>
+        <tr><td><code>responses()</code> at line 769</td><td>OpenAI Responses API</td></tr>
+        <tr><td><code>litellm_completion()</code> at line 1087</td><td>actual underlying call</td></tr>
+        <tr><td><code>_coerce_inputs()</code> 492-532</td><td>provider rewrites — <code>openhands/*</code> → <code>litellm_proxy/*</code></td></tr>
+        <tr><td>capability probes 1096-1140</td><td><code>_supports_vision</code>, <code>is_caching_prompt_active</code>, <code>uses_responses_api</code></td></tr>
+        <tr><td>OAuth login 1268-1317</td><td>ChatGPT Plus/Pro subscription flow</td></tr>
+      </tbody>
+    </table>
+    <p>Bonus features: prompt caching flag, fallback strategy (<code>fallback_strategy.py</code>), multi-LLM registry, content-based routing via <code>llm/router/</code>.</p>
+  </section>
+
+  <section>
+    <h2>10 · MCP — Both Directions</h2>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart LR
+    Ext[(External MCP server<br/>GitHub, browser, ...)]
+    Ext2[(External MCP server)]
+    OH[OpenHands agent]
+    Other[(Claude / other client)]
+    OH -- outbound client<br/>sdk/mcp + fastmcp --> Ext
+    OH -- outbound client --> Ext2
+    Other -- inbound MCP<br/>/mcp endpoint --> OH
+      </div>
+    </div>
+    <p>Client: <code>sdk/mcp/client.py</code> wraps <code>fastmcp.Client</code>. Server: <code>app_server/app.py</code> mounts an MCP server at <code>/mcp</code>; the in-sandbox <code>mcp_router.py</code> exposes a parallel surface so the agent-server itself can be called via MCP.</p>
+  </section>
+
+  <section>
+    <h2>11 · Hooks (v1.6.0+)</h2>
+    <table class="matrix">
+      <thead><tr><th>Event</th><th>Can block?</th><th>Fires</th></tr></thead>
+      <tbody>
+        <tr><td><code>run_pre_tool_use()</code></td><td><span class="yes">yes</span></td><td>Before each tool invocation</td></tr>
+        <tr><td><code>run_post_tool_use()</code></td><td><span class="no">no</span></td><td>After each tool result</td></tr>
+        <tr><td><code>run_user_prompt_submit()</code></td><td><span class="yes">yes</span></td><td>User sends a message</td></tr>
+        <tr><td><code>run_session_start()</code></td><td><span class="no">no</span></td><td>Conversation init</td></tr>
+        <tr><td><code>run_session_end()</code></td><td><span class="no">no</span></td><td>Conversation teardown</td></tr>
+        <tr><td><code>run_stop()</code></td><td><span class="no">no</span></td><td>Agent says it's done</td></tr>
+      </tbody>
+    </table>
+    <p>Config-driven dispatch via <code>config.get_hooks_for_event()</code> — no register/dispatch pattern. In-sandbox <code>hooks_router.py</code> mirrors the host. Webhook fan-out via <code>app_server/event_callback/webhook_router.py</code>.</p>
+  </section>
+
+  <section>
+    <h2>12 · Capabilities Matrix</h2>
+    <table class="matrix">
+      <tbody>
+        <tr><td>Harness</td><td>FastAPI app + SDK + in-sandbox FastAPI; <code>Conversation.__new__</code> factory</td></tr>
+        <tr><td>Agent loop</td><td><code>LocalConversation.run()</code> w/ stuck detector + max_iterations 500</td></tr>
+        <tr><td>Tools</td><td>Typed <code>ToolDefinition[ActionT, ObservationT]</code>; native fn-calling</td></tr>
+        <tr><td>Sandboxing</td><td>Docker (default), KVM (1.7), process (trusted), remote</td></tr>
+        <tr><td>Sandbox-as-service</td><td><code>openhands-agent-server</code> FastAPI w/ ~20 routers + VS Code</td></tr>
+        <tr><td>LLM</td><td>LiteLLM, ~50 providers, prompt caching, fallback chains, OAuth login</td></tr>
+        <tr><td>Context mgmt</td><td><code>LLMSummarizingCondenser</code> + 5-pattern <code>StuckDetector</code></td></tr>
+        <tr><td>Hooks</td><td>6 events; PreToolUse + UserPromptSubmit can block (1.6.0+)</td></tr>
+        <tr><td>Skills</td><td>YAML front-matter md; knowledge + repo; slash-triggered</td></tr>
+        <tr><td>Memory</td><td>Event log (persisted, optionally encrypted); skills-as-state</td></tr>
+        <tr><td>Sub-agents</td><td>Registry + <code>DelegateTool</code> + <code>TaskToolSet</code>; parallel within turn</td></tr>
+        <tr><td>MCP</td><td>Client (<code>fastmcp</code>) + server (<code>/mcp</code> endpoint, plus in-sandbox)</td></tr>
+        <tr><td>Security</td><td>LLM-attested risk per action + ensemble analyzers + confirmation</td></tr>
+        <tr><td>Persistence</td><td><code>EventLog</code> w/ encryption; <code>fork()</code> + <code>rerun_actions()</code></td></tr>
+        <tr><td>Eval</td><td>6-benchmark suite (SWE-Bench Verified 77.6 claimed)</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>13 · Strengths & Tradeoffs</h2>
+    <div class="cards">
+      <div class="card">
+        <div class="icon">💪</div>
+        <h4>Strengths</h4>
+        <ul>
+          <li>Event-sourced state → replay, fork, encrypted persistence for free</li>
+          <li>In-sandbox FastAPI server with VS Code, hooks, MCP inside the box</li>
+          <li>Five-tier productization off one core (SDK → CLI → GUI → Cloud → Enterprise)</li>
+          <li>~50 providers via LiteLLM with fallback chains + OAuth subscription login</li>
+          <li>First-class MCP client + server on host and inside sandbox</li>
+          <li>77.6 SWE-Bench Verified; 6-benchmark eval suite</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="icon">⚖️</div>
+        <h4>Tradeoffs</h4>
+        <ul>
+          <li>v1.0 split scatters code across 7+ repos — real onboarding work</li>
+          <li>Heavyweight stack: FastAPI host + FastAPI sandbox + React + Docker</li>
+          <li><code>enterprise/</code> is Polyform (30-day annual non-commercial trial)</li>
+          <li>Agent-server PyInstaller binary adds HTTP hop + build artifact</li>
+          <li>Old OpenDevin docs rank high but cite paths that 404 in v1</li>
+          <li>One <code>Agent</code> class — no subclass diversity</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>14 · Key Takeaways</h2>
+    <ol>
+      <li><b>Events are the data model.</b> Replay, fork, encryption, and remote symmetry are all consequences of treating the conversation as an immutable log rather than a message array.</li>
+      <li><b>The sandbox is a service, not a shell.</b> A full FastAPI agent-server inside Docker gets you VS Code, MCP, and hooks <i>inside</i> the box for free.</li>
+      <li><b>One agent, four extension axes.</b> Tools, presets, skills (YAML), subagent registry — replacing the old agent-class hierarchy. CodeActAgent is now a YAML string.</li>
+      <li><b>Condenser + stuck detector are orthogonal.</b> "Context is too big" vs "agent is in a loop" — kept separable.</li>
+      <li><b>The v1.0 split is the story.</b> OpenDevin was a monolith; OpenHands is a polyrepo where each layer has one job.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Further Reading</h2>
+    <ul>
+      <li><a href="https://github.com/All-Hands-AI/OpenHands">All-Hands-AI/OpenHands</a> — main app server + frontend</li>
+      <li><a href="https://github.com/OpenHands/agent-sdk">OpenHands/agent-sdk</a> — the actual agent</li>
+      <li><a href="https://github.com/OpenHands/OpenHands-CLI">OpenHands/OpenHands-CLI</a> — TUI / headless</li>
+      <li><a href="https://github.com/OpenHands/benchmarks">OpenHands/benchmarks</a> — eval harness</li>
+      <li><a href="https://docs.openhands.dev/">docs.openhands.dev</a> — published docs</li>
+      <li><a href="comparison.html">Cross-agent comparison</a></li>
+    </ul>
+  </section>
+</main>
+<footer class="site-footer">
+  AI Agent Architecture Series · <a href="https://github.com/humanjack/ai-engineering">repo</a>
+</footer>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script src="_shared.js"></script>
+</body>
+</html>

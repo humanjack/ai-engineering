@@ -1,0 +1,18 @@
+flowchart TB
+    Call[Conversation agent, workspace, ...]
+    Factory{Conversation.__new__<br/>conversation.py:56}
+    LocalC[LocalConversation]
+    RemoteC[RemoteConversation]
+    LocalWS[LocalWorkspace<br/>subprocess + shutil]
+    RemoteWS[AsyncRemoteWorkspace<br/>HTTP client]
+    AS[openhands-agent-server<br/>inside sandbox]
+    Same[Same public API:<br/>send_message · run · pause<br/>fork · rerun_actions]
+
+    Call --> Factory
+    Factory -- workspace.is_remote == false --> LocalC --> LocalWS
+    Factory -- workspace.is_remote == true --> RemoteC --> RemoteWS -.HTTP/WS.-> AS
+    LocalC --> Same
+    RemoteC --> Same
+
+    classDef accent fill:#fef3c7,stroke:#a16207
+    class Factory accent

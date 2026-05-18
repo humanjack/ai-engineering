@@ -1,0 +1,33 @@
+flowchart LR
+    Host[Host: RemoteConversation]
+    subgraph Container["Docker / KVM / Remote VM"]
+        API[api.py FastAPI app]
+        subgraph Routers["~20 routers"]
+            R1[conversation_router]
+            R2[bash_router]
+            R3[file_router]
+            R4[git_router]
+            R5[mcp_router]
+            R6[vscode_router]
+            R7[hooks_router]
+            R8[skills_router]
+            R9[event_router]
+            R10[desktop_router]
+        end
+        subgraph Services["services"]
+            S1[bash_service]
+            S2[conversation_service]
+            S3[event_service]
+            S4[hooks_service]
+            S5[tool_preload_service]
+            S6[vscode_service]
+            S7[desktop_service]
+        end
+        Persist[persistence/]
+        Sock[sockets — websockets]
+    end
+    Host -.HTTP REST.-> API
+    Host -.WS.-> Sock
+    API --> Routers
+    Routers --> Services
+    Services --> Persist

@@ -40,6 +40,7 @@
       <a href="opencode.html">OpenCode</a>
       <a href="deepagents.html">Deep Agents</a>
       <a href="codex.html">Codex</a>
+      <a href="openhands.html">OpenHands</a>
       <a href="comparison.html">Compare</a>
     </nav>
   </div>
@@ -47,7 +48,7 @@
 
 <main>
   <h1 class="hero">Cross-Agent <span style="color:var(--muted);font-weight:400">comparison</span></h1>
-  <p class="hero-sub">How the six agents stack up. Same capability, different solutions. Use this page to pick the right one for your project — or steal the right idea for yours.</p>
+  <p class="hero-sub">How the seven agents stack up. Same capability, different solutions. Use this page to pick the right one for your project — or steal the right idea for yours.</p>
 
   <section>
     <h2>Capability Matrix</h2>
@@ -59,24 +60,25 @@
     <div class="compare-wrap">
       <table class="compare matrix">
         <thead>
-          <tr><th>Capability</th><th>Pi</th><th>OpenClaw</th><th>Hermes</th><th>OpenCode</th><th>Deep Agents</th><th>Codex</th></tr>
+          <tr><th>Capability</th><th>Pi</th><th>OpenClaw</th><th>Hermes</th><th>OpenCode</th><th>Deep Agents</th><th>Codex</th><th>OpenHands</th></tr>
         </thead>
         <tbody>
-          <tr><td>Language</td><td>TypeScript</td><td>TypeScript</td><td>Python</td><td>TS + Go TUI</td><td>Python</td><td>Rust</td></tr>
-          <tr><td>Default tool count</td><td>4</td><td>~50 (5 layers)</td><td>80+</td><td>11 + MCP</td><td>~15</td><td>~15 + MCP</td></tr>
-          <tr><td>Sandboxing</td><td class="n">✗ none</td><td>Docker / SSH / OpenShell</td><td>7 backends</td><td>tree-sitter AST perms</td><td>partner sandboxes</td><td class="y">✓ Seatbelt + bwrap + seccomp + Landlock</td></tr>
-          <tr><td>Stop-hook continuation</td><td class="n">✗</td><td class="n">✗</td><td class="n">✗</td><td class="n">✗</td><td class="n">✗</td><td class="y">✓</td></tr>
-          <tr><td>MCP client</td><td class="p">~ via mcporter</td><td class="y">✓</td><td class="y">✓</td><td class="y">✓</td><td class="y">✓</td><td class="y">✓</td></tr>
-          <tr><td>MCP server (inbound)</td><td class="n">✗</td><td class="y">✓</td><td class="y">✓</td><td class="n">✗</td><td class="n">✗</td><td class="y">✓</td></tr>
-          <tr><td>Skills (markdown)</td><td class="y">✓ progressive</td><td>56 bundled</td><td class="y">✓ + Skills Hub</td><td>dev branch only</td><td class="y">✓ progressive</td><td class="y">✓ explicit + implicit</td></tr>
-          <tr><td>Vector DB by default</td><td class="n">✗</td><td class="n">✗ (plugin)</td><td class="n">✗ (1 ext)</td><td class="n">✗</td><td class="n">✗</td><td class="n">✗</td></tr>
-          <tr><td>Self-improving skills</td><td class="n">✗</td><td class="n">✗</td><td class="y">✓ curator</td><td class="n">✗</td><td class="n">✗</td><td class="n">✗</td></tr>
-          <tr><td>Session shape</td><td><b>tree</b></td><td>JSONL</td><td>SQLite FTS5</td><td>JSON → SQLite</td><td>LangGraph state</td><td>JSONL rollouts</td></tr>
-          <tr><td>Sub-agents</td><td>community ext</td><td><code>sessions_spawn</code></td><td><code>delegate_task</code></td><td><code>task</code> sync</td><td><code>task</code> parallel</td><td class="y">first-class + mailboxes</td></tr>
-          <tr><td>Cron / webhooks</td><td class="n">✗</td><td class="y">✓ + Gmail PubSub</td><td class="y">✓ (pre-Anthropic)</td><td class="n">✗</td><td class="n">✗</td><td class="n">✗</td></tr>
-          <tr><td>Provider portability</td><td class="y">excellent (mid-swap)</td><td class="y">excellent</td><td class="y">excellent</td><td>provider-tuned prompts</td><td><code>init_chat_model</code></td><td>Responses-API primary</td></tr>
-          <tr><td>Eval harness in-repo</td><td class="n">✗</td><td class="n">✗</td><td>mini_swe_runner</td><td>httpapi-exercise</td><td class="y">harbor pkg</td><td class="n">✗ (internal)</td></tr>
-          <tr><td>LSP integration</td><td class="n">✗</td><td class="n">✗</td><td class="n">✗</td><td class="y">first-class feedback</td><td class="n">✗</td><td class="n">✗</td></tr>
+          <tr><td>Language</td><td>TypeScript</td><td>TypeScript</td><td>Python</td><td>TS + Go TUI</td><td>Python</td><td>Rust</td><td>Python + TS</td></tr>
+          <tr><td>Default tool count</td><td>4</td><td>~50 (5 layers)</td><td>80+</td><td>11 + MCP</td><td>~15</td><td>~15 + MCP</td><td>~10 + MCP + skills</td></tr>
+          <tr><td>Sandboxing</td><td class="n">✗ none</td><td>Docker / SSH / OpenShell</td><td>7 backends</td><td>tree-sitter AST perms</td><td>partner sandboxes</td><td class="y">✓ Seatbelt + bwrap + seccomp + Landlock</td><td class="y">✓ Docker/KVM + in-sandbox FastAPI server</td></tr>
+          <tr><td>Stop-hook continuation</td><td class="n">✗</td><td class="n">✗</td><td class="n">✗</td><td class="n">✗</td><td class="n">✗</td><td class="y">✓</td><td class="n">✗</td></tr>
+          <tr><td>MCP client</td><td class="p">~ via mcporter</td><td class="y">✓</td><td class="y">✓</td><td class="y">✓</td><td class="y">✓</td><td class="y">✓</td><td class="y">✓ fastmcp</td></tr>
+          <tr><td>MCP server (inbound)</td><td class="n">✗</td><td class="y">✓</td><td class="y">✓</td><td class="n">✗</td><td class="n">✗</td><td class="y">✓</td><td class="y">✓ /mcp + sandbox</td></tr>
+          <tr><td>Skills (markdown)</td><td class="y">✓ progressive</td><td>56 bundled</td><td class="y">✓ + Skills Hub</td><td>dev branch only</td><td class="y">✓ progressive</td><td class="y">✓ explicit + implicit</td><td class="y">✓ YAML + slash triggers</td></tr>
+          <tr><td>Vector DB by default</td><td class="n">✗</td><td class="n">✗ (plugin)</td><td class="n">✗ (1 ext)</td><td class="n">✗</td><td class="n">✗</td><td class="n">✗</td><td class="n">✗</td></tr>
+          <tr><td>Self-improving skills</td><td class="n">✗</td><td class="n">✗</td><td class="y">✓ curator</td><td class="n">✗</td><td class="n">✗</td><td class="n">✗</td><td class="n">✗</td></tr>
+          <tr><td>Session shape</td><td><b>tree</b></td><td>JSONL</td><td>SQLite FTS5</td><td>JSON → SQLite</td><td>LangGraph state</td><td>JSONL rollouts</td><td><b>EventLog + fork/rerun</b></td></tr>
+          <tr><td>Sub-agents</td><td>community ext</td><td><code>sessions_spawn</code></td><td><code>delegate_task</code></td><td><code>task</code> sync</td><td><code>task</code> parallel</td><td class="y">first-class + mailboxes</td><td><code>DelegateTool</code> + registry + parallel</td></tr>
+          <tr><td>Cron / webhooks</td><td class="n">✗</td><td class="y">✓ + Gmail PubSub</td><td class="y">✓ (pre-Anthropic)</td><td class="n">✗</td><td class="n">✗</td><td class="n">✗</td><td class="p">~ event_callback webhooks</td></tr>
+          <tr><td>Provider portability</td><td class="y">excellent (mid-swap)</td><td class="y">excellent</td><td class="y">excellent</td><td>provider-tuned prompts</td><td><code>init_chat_model</code></td><td>Responses-API primary</td><td class="y">LiteLLM ~50 + fallback chains</td></tr>
+          <tr><td>Eval harness in-repo</td><td class="n">✗</td><td class="n">✗</td><td>mini_swe_runner</td><td>httpapi-exercise</td><td class="y">harbor pkg</td><td class="n">✗ (internal)</td><td class="y">benchmarks sibling repo</td></tr>
+          <tr><td>LSP integration</td><td class="n">✗</td><td class="n">✗</td><td class="n">✗</td><td class="y">first-class feedback</td><td class="n">✗</td><td class="n">✗</td><td class="p">~ VS Code in sandbox</td></tr>
+          <tr><td>Event-sourced state</td><td class="n">✗</td><td class="n">✗</td><td class="n">✗</td><td class="n">✗</td><td class="n">✗</td><td class="n">✗</td><td class="y">✓ EventLog + encryption</td></tr>
         </tbody>
       </table>
     </div>
@@ -93,6 +95,7 @@ flowchart TD
     Start --> Research{Research / sub-agents?}
     Code --> Strong{Need OS sandbox?}
     Strong -- yes --> Codex[Codex CLI]
+    Strong -- "VS Code inside" --> OpenHands[OpenHands]
     Strong -- no --> LSP{Want LSP feedback?}
     LSP -- yes --> OpenCode[OpenCode]
     LSP -- no --> Min{Minimal core?}
@@ -104,6 +107,7 @@ flowchart TD
     Research --> Sub{Real sub-agents?}
     Sub -- yes --> DA[Deep Agents]
     Sub -- "+mailboxes" --> Codex2[Codex CLI]
+    Sub -- "+replay/fork" --> OpenHands2[OpenHands]
       </div>
     </div>
   </section>
@@ -128,6 +132,7 @@ flowchart TD
           <tr><td>OpenCode</td><td>Two-tier: prune tool-output to 40k cap, then compact if overflowing</td></tr>
           <tr><td>Deep Agents</td><td>Result &gt;20k tokens evicted to <code>/large_tool_results/{id}</code>, inline replaced with head/tail preview</td></tr>
           <tr><td>Codex</td><td>Mid-turn compaction on <code>ContextWindowExceeded</code>; 3 provider-specific impls (local / remote v1 / remote v2)</td></tr>
+          <tr><td>OpenHands</td><td><code>LLMSummarizingCondenser</code> replaces forgettable window with one summary event; <code>keep_first</code> prefix preserved for cache hits; <code>hard_context_reset</code> fallback</td></tr>
         </tbody>
       </table>
     </div>
@@ -142,6 +147,7 @@ flowchart TD
           <tr><td>OpenCode</td><td>Built-in <code>todowrite</code> / <code>todoread</code> — model self-managed</td></tr>
           <tr><td>Deep Agents</td><td><code>write_todos</code> from <code>TodoListMiddleware</code></td></tr>
           <tr><td>Codex</td><td><code>update_plan</code> emits <code>PlanUpdate</code> event; disabled in Plan mode</td></tr>
+          <tr><td>OpenHands</td><td><code>task_tracker/</code> tool in default preset + <code>planning_file_editor/</code> + planning preset (1.5.0+)</td></tr>
         </tbody>
       </table>
     </div>
@@ -156,6 +162,7 @@ flowchart TD
           <tr><td>OpenCode</td><td><code>task</code> — child session with <code>parentID</code>, synchronous</td></tr>
           <tr><td>Deep Agents</td><td><code>task</code> — ephemeral, parallelizable, custom personas</td></tr>
           <tr><td>Codex</td><td>First-class: <code>agent_jobs</code>, <code>multi_agents</code>; registry + mailboxes + goals</td></tr>
+          <tr><td>OpenHands</td><td><code>DelegateTool</code> + subagent registry (<code>register_agent()</code>) + <code>TaskToolSet</code>; <code>parallel_executor.py</code> for in-turn concurrency</td></tr>
         </tbody>
       </table>
     </div>
@@ -170,6 +177,7 @@ flowchart TD
           <tr><td>OpenCode</td><td>OpenAPI 3.1 server → Stainless generates SDKs for many clients</td></tr>
           <tr><td>Deep Agents</td><td>LangChain <code>init_chat_model("provider:model")</code></td></tr>
           <tr><td>Codex</td><td>Same <code>Op</code>/<code>EventMsg</code> protocol → 5 frontends; Responses API + Anthropic/Ollama/Bedrock</td></tr>
+          <tr><td>OpenHands</td><td><code>Conversation.__new__()</code> factory dispatches Local↔Remote on workspace type — same API, transport varies. LiteLLM covers ~50 providers w/ fallback chains</td></tr>
         </tbody>
       </table>
     </div>
@@ -187,20 +195,24 @@ flowchart TD
     OCo[OpenCode]
     DA[Deep Agents]
     Cx[Codex CLI]
+    OH[OpenHands]
     Claude -. AGENTS.md convention .-> Pi
     Claude -. AGENTS.md .-> OCo
     Claude -. AGENTS.md .-> Cx
     Claude -. AGENTS.md .-> DA
     Claude -. hooks schema .-> Cx
     Claude -. hooks schema .-> Her
+    Claude -. hooks schema .-> OH
     Claude -. SKILL.md progressive disclosure .-> Pi
     Claude -. SKILL.md .-> Her
     Claude -. SKILL.md .-> Cx
     Claude -. SKILL.md .-> DA
+    Claude -. skills (YAML) .-> OH
     Pi -- embedded as runtime --> OC
     Pi -. inspires .-> OCo
     DA -. middleware idea .-> Cx
     Cx -. compaction patterns .-> Her
+    OH -. CodeAct paper .-> Cx
       </div>
     </div>
     <p>De facto cross-agent standards: <b>AGENTS.md</b> for project memory, <b>SKILL.md</b> with frontmatter (agentskills.io), <b>MCP</b> for tool composition, <b>JSON-over-stdio hooks</b>.</p>
@@ -215,6 +227,7 @@ flowchart TD
       <div class="row"><b>OpenCode</b> — "Treat your language server as the agent's compiler."</div>
       <div class="row"><b>Deep Agents</b> — "Compose your agent from middleware; let LangGraph hold the state."</div>
       <div class="row"><b>Codex CLI</b> — "Don't trust the model — let the OS enforce."</div>
+      <div class="row"><b>OpenHands</b> — "Make every action an immutable event; make the sandbox a service."</div>
     </div>
   </section>
 
@@ -227,6 +240,7 @@ flowchart TD
       <a href="opencode.html" class="card"><h4>OpenCode</h4><p>The LSP-native coding agent →</p></a>
       <a href="deepagents.html" class="card"><h4>Deep Agents</h4><p>LangChain's opinionated harness →</p></a>
       <a href="codex.html" class="card"><h4>Codex CLI</h4><p>One protocol, five frontends, three sandboxes →</p></a>
+      <a href="openhands.html" class="card"><h4>OpenHands</h4><p>Event-sourced agent with a FastAPI sandbox →</p></a>
     </div>
   </section>
 </main>

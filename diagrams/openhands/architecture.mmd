@@ -1,0 +1,44 @@
+flowchart TB
+    subgraph Front["frontend/ — React Router v7 SPA"]
+        UI[Components · Zustand · TanStack Query]
+        Sock[socket.io-client]
+    end
+    subgraph App["openhands/app_server — FastAPI"]
+        V1[v1_router /api/v1<br/>13 sub-routers]
+        MCPep[MCP server mounted @ /mcp]
+        Sbx[sandbox service<br/>docker / process / remote]
+        Lease[ConversationLease]
+    end
+    subgraph SDK["agent-sdk repo — openhands-sdk"]
+        Conv[Conversation factory __new__]
+        Local[LocalConversation 1063 LOC]
+        Remote[RemoteConversation]
+        Agent[Agent agent.py:235]
+        State[ConversationState + EventLog]
+        LLM[LLM via LiteLLM llm.py:118]
+        Cond[Condenser]
+        Hooks[HookManager]
+        Skills[Skills · Subagents]
+    end
+    subgraph Box["Docker / cloud sandbox"]
+        ASrv[openhands-agent-server<br/>FastAPI · ~40 routers]
+        Term[TerminalSession]
+        FE[FileEditor]
+        VSC[VS Code]
+        Browser[BrowserUse]
+    end
+    UI <--> V1
+    Sock <--> V1
+    V1 --> Conv
+    Conv --> Local
+    Conv --> Remote
+    Remote -.HTTP/WS.-> ASrv
+    Local --> Agent
+    Agent --> LLM
+    Agent --> Cond
+    Agent --> Hooks
+    Agent --> State
+    ASrv --> Term
+    ASrv --> FE
+    ASrv --> VSC
+    ASrv --> Browser
