@@ -1,0 +1,43 @@
+flowchart TB
+    subgraph FrontDoors["Front doors"]
+        CLI[overmind CLI<br/>init / agent / setup<br/>optimize / optimize-step / doctor]
+        Skills[3 Agent Skills<br/>register / spec / optimize]
+        Host[Host coding agent<br/>Claude Code / Cursor]
+    end
+    subgraph Core["Optimizer (overmind/optimize/optimizer.py ~2.5k LOC)"]
+        Orch[Optimizer state machine]
+        Steps[steps/<br/>baseline · diagnose · evaluate · accept · report]
+        State[(run_state.json<br/>cross-run memory)]
+    end
+    subgraph Brains["Brains"]
+        Analyzer[analyzer.py ~2.1k LOC<br/>DIAGNOSIS + CODEGEN prompts<br/>compute_focus_weights]
+        CodingAgent[coding_agent/<br/>Claude-style inner agent<br/>MAX_STEPS=50, doom-loop guard]
+        Evaluator[evaluator.py ~1.1k LOC<br/>4-layer scoring<br/>mech · LLM-judge · tools · types]
+    end
+    subgraph Execution["Per-candidate execution"]
+        Worktree[git worktree per candidate]
+        Runner[runner.py ~1.4k LOC<br/>subprocess + uv venv]
+        Shadow[shadow_runtime.py<br/>Replay / Simulate / Passthrough]
+        Cassette[(cassette.jsonl<br/>SHA-256 keyed)]
+    end
+    subgraph Memory["Persistent state (.overmind/)"]
+        Reg[(agents.toml)]
+        Spec[(policies.md<br/>eval_spec.json<br/>dataset.json)]
+        FR[(FailureRegistry<br/>open→resolved→regressed)]
+        Snap[(accepted_snapshots)]
+    end
+    subgraph Telemetry["Observability"]
+        OTel[OpenTelemetry<br/>W3C traceparent stitching]
+        Prov[Provenance: 6 SourceTags<br/>→ Confidence 0.0–1.0]
+        Backend[Overmind cloud backend]
+    end
+    Host --> Skills --> CLI --> Core
+    Orch --> Steps --> Analyzer
+    Analyzer --> CodingAgent
+    CodingAgent --> Worktree
+    Worktree --> Runner --> Shadow --> Cassette
+    Runner --> Evaluator
+    Evaluator -- score.json --> Steps
+    Steps --> State
+    Core --> Memory
+    Runner -- spans --> OTel --> Prov --> Backend

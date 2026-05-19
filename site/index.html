@@ -41,6 +41,7 @@
       <a href="opencode.html">OpenCode</a>
       <a href="deepagents.html">Deep Agents</a>
       <a href="codex.html">Codex</a>
+      <a href="overmind.html">Overmind</a>
       <a href="comparison.html">Compare</a>
     </nav>
   </div>
@@ -49,11 +50,11 @@
 <main>
   <div class="hero-banner">
     <h1 class="hero">How AI Agents <span style="color:var(--muted);font-weight:400">actually work</span></h1>
-    <p class="hero-sub" style="margin: 0 auto; font-size: 19px;">Six deep-dives on real open-source agent codebases. Grounded in source. Illustrated with diagrams. Synthesized into a comparison guide.</p>
+    <p class="hero-sub" style="margin: 0 auto; font-size: 19px;">Seven deep-dives on real open-source agent codebases. Grounded in source. Illustrated with diagrams. Synthesized into a comparison guide.</p>
   </div>
 
   <section>
-    <h2>The Six Agents</h2>
+    <h2>The Seven Agents</h2>
     <div class="agent-grid">
 
       <div class="agent-card">
@@ -104,6 +105,14 @@
         <a href="codex.html" class="cta">Read deep-dive →</a>
       </div>
 
+      <div class="agent-card">
+        <div class="num">07</div>
+        <h3>Overmind</h3>
+        <span class="lang">Python · overmind-core/overmind</span>
+        <p class="tagline">The agent that optimizes other agents. Policy-driven best-of-N candidate generation in git worktrees. Regression-aware acceptance gates. Cross-run FailureRegistry.</p>
+        <a href="overmind.html" class="cta">Read deep-dive →</a>
+      </div>
+
     </div>
   </section>
 
@@ -116,6 +125,7 @@
       <dt>Code-editing agent with type-checking?</dt><dd><a href="opencode.html">OpenCode</a> — LSP feedback in the loop</dd>
       <dt>Middleware-composable, with evals?</dt><dd><a href="deepagents.html">Deep Agents</a> — LangGraph + `harbor`</dd>
       <dt>Need real OS-enforced sandboxing?</dt><dd><a href="codex.html">Codex CLI</a> — 3 layers per platform</dd>
+      <dt>Want to <i>improve</i> an existing agent?</dt><dd><a href="overmind.html">Overmind</a> — policy-driven optimizer with regression-aware gates</dd>
     </dl>
   </section>
 
@@ -128,6 +138,8 @@ flowchart TD
     Start --> Code{Coding agent?}
     Start --> Chat{Chat assistant?}
     Start --> Research{Research / sub-agents?}
+    Start --> Improve{Improve existing agent?}
+    Improve --> OM[Overmind]
     Code --> Strong{Need OS sandbox?}
     Strong -- yes --> Codex[Codex CLI]
     Strong -- no --> LSP{Want LSP feedback?}

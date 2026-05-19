@@ -1,0 +1,13 @@
+flowchart TB
+    Out([Candidate run outputs])
+    Out --> L1[Layer 1: Mechanical<br/>schema · enum · types · presence]
+    Out --> L2[Layer 2: LLM-as-judge<br/>against policies.md<br/>fallback: text similarity]
+    Out --> L3[Layer 3: Tool usage<br/>required tools called?<br/>correct args / order?]
+    Out --> L4[Layer 4: Type correctness<br/>output type ∈ text/enum/number/boolean<br/>max −10 penalty]
+    L1 --> Mix[Weighted aggregate<br/>weights sum = 100<br/>per eval_spec.json]
+    L2 --> Mix
+    L3 --> Mix
+    L4 --> Mix
+    Mix --> Score([avg_total ∈ 0–100])
+    Score --> Comp[Apply complexity penalty<br/>capped at 60% of raw gain]
+    Comp --> Final([final score for accept_step])

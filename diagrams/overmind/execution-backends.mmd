@@ -1,0 +1,20 @@
+flowchart TB
+    Call([Evaluate candidate])
+    Call --> Try1[Subprocess backend<br/>real venv, real LLM calls,<br/>real tools, real network]
+    Try1 -- ok --> Score1[score &amp; spans<br/>SourceTag = Real]
+    Try1 -- recoverable failure --> Try2[Shadow backend<br/>real subprocess, real LLM,<br/>cassette-replayed HTTP/tools/browser]
+    Try2 -- ok --> Score2[score &amp; spans<br/>SourceTag = ShadowReplay]
+    Try2 -- non-recoverable --> Try3[Static backend<br/>no execution; reason from<br/>code + cached traces only]
+    Try3 --> Score3[score &amp; spans<br/>SourceTag = StaticOnly]
+    Score1 --> Conf{Confidence aggregation<br/>0.0–1.0}
+    Score2 --> Conf
+    Score3 --> Conf
+    Conf -- high --> Auto[auto-accept eligible]
+    Conf -- medium --> Flag[flag for review]
+    Conf -- low --> Reject[reject signal]
+    classDef good fill:#d1fae5,stroke:#10b981
+    classDef warn fill:#fef3c7,stroke:#f59e0b
+    classDef bad fill:#fee2e2,stroke:#ef4444
+    class Try1,Score1 good
+    class Try2,Score2 warn
+    class Try3,Score3 bad

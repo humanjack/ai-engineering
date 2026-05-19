@@ -1,0 +1,15 @@
+flowchart LR
+    User([Developer in Claude Code / Cursor])
+    User --> S1[/overmind-register-agent/]
+    S1 --> S1a[Pick analyzer provider + model<br/>write .overmind/.env placeholders]
+    S1a --> S1b((Mandatory<br/>Keys Pause))
+    S1b --> S1c[Build interaction harness<br/>validate via overmind agent validate]
+    S1c --> S2[/overmind-generate-spec-and-dataset/]
+    S2 --> S2a[Generate policies.md<br/>+ eval_spec.json<br/>+ dataset.json]
+    S2a --> S2b{Validation gates<br/>· optimizable globs expand<br/>· entrypoint ∉ optimizable<br/>· weights sum = 100<br/>· transient-error quarantine}
+    S2b --> S3[/overmind-optimize-agent/]
+    S3 --> Choose{Execution mode}
+    Choose -- Path A --> A[overmind optimize<br/>end-to-end CLI<br/>rich dashboard<br/>host agent stops]
+    Choose -- Path B --> B[overmind optimize-step<br/>host agent loops<br/>own subagents per candidate<br/>strictly serial]
+    A --> R[experiments/best_agent.py<br/>experiments/report.md]
+    B --> R

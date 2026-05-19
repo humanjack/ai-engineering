@@ -1,0 +1,18 @@
+flowchart TB
+    Start([overmind optimize agent]) --> Init[Init: load bundle<br/>policies + eval_spec + dataset]
+    Init --> Baseline[Phase 1: Baseline<br/>run unmodified agent on train split<br/>record _baseline_train_score]
+    Baseline --> Iter{Iteration k &lt; N?<br/>default N=5}
+    Iter -- yes --> Diag[Diagnose<br/>analyzer LLM proposes M plans<br/>each plan = focus_area + PROMPT.md]
+    Diag --> Fork[Fork M git worktrees<br/>1 per candidate]
+    Fork --> Apply[Inner coding agent applies plan<br/>read/write/edit/grep/glob/bash/apply_patch]
+    Apply --> Eval[Evaluate each worktree<br/>subprocess run on train split<br/>4-layer score → score.json]
+    Eval --> Accept{Accept gates<br/>1 · read-only byte-equality<br/>2 · noise / net / magnitude / threshold<br/>3 · complexity penalty cap 60%<br/>4 · data-leakage detector}
+    Accept -- best &gt; current --> Promote[Promote winner<br/>snapshot for rollback]
+    Accept -- none pass --> Skip[Record failed_attempts<br/>continue]
+    Promote --> Holdout[Holdout probe<br/>score on held-out split]
+    Holdout --> Persist[Update FailureRegistry<br/>open → resolved / regressed]
+    Skip --> Persist
+    Persist --> Iter
+    Iter -- no --> Backtest[Phase 3: Model backtest<br/>re-evaluate across model IDs]
+    Backtest --> Report[Phase 4: Report<br/>experiments/best_agent.py<br/>experiments/report.md]
+    Report --> End([User commits diff])

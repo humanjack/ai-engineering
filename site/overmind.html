@@ -1,0 +1,481 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Overmind — The Agent That Optimizes Other Agents</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="_shared.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="wrap">
+    <div class="brand"><span class="brand-dot"></span> AI Agent Architecture Series</div>
+    <nav>
+      <a href="index.html">Index</a>
+      <a href="pi.html">Pi</a>
+      <a href="openclaw.html">OpenClaw</a>
+      <a href="hermes.html">Hermes</a>
+      <a href="opencode.html">OpenCode</a>
+      <a href="deepagents.html">Deep Agents</a>
+      <a href="codex.html">Codex</a>
+      <a href="overmind.html">Overmind</a>
+      <a href="comparison.html">Compare</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <h1 class="hero">Overmind <span style="color:var(--muted);font-weight:400">— the agent that optimizes other agents</span></h1>
+  <p class="hero-sub">A policy-driven optimizer that ingests your existing LLM agent, runs it under a synthesized eval suite, diagnoses failures with OpenTelemetry tracing, and uses an internal coding agent to rewrite prompts, tool descriptions, and pipeline logic — promoting changes only past regression-aware acceptance gates.</p>
+  <div class="hero-meta">
+    <span class="chip"><strong>Language</strong> Python 3.10–3.13</span>
+    <span class="chip"><strong>License</strong> MIT (pyproject classifier)</span>
+    <span class="chip"><strong>Status</strong> Alpha · v0.1.49</span>
+    <span class="chip"><strong>Maintainer</strong> Overmind Ltd</span>
+    <span class="chip"><a href="https://github.com/overmind-core/overmind">↗ overmind-core/overmind</a></span>
+  </div>
+
+  <section>
+    <h2>Identity check</h2>
+    <p class="callout"><b>This is NOT the well-known DarthSim/overmind Procfile process manager.</b> <code>overmind-core/overmind</code> is an <b>autonomous LLM-agent optimizer</b> — a tool that ingests a Python (or JS) agent and iteratively rewrites its prompts, tool descriptions, model choices, and pipeline logic to improve measured performance. Peer tools: <b>DSPy, GEPA, TextGrad, OptiLLM, Trace</b>. Not a coding agent like Claude Code / Codex / OpenCode — but it <i>uses</i> an internal coding agent to do its edits, and it integrates <i>into</i> those coding agents via Agent Skills.</p>
+  </section>
+
+  <section>
+    <h2>TL;DR</h2>
+    <div class="tldr">
+      <div class="card"><b>Optimizer, not chatbot.</b> The outer loop is best-of-N candidate generation driven by an evaluation score, not a tool-call loop driven by user intent. Each candidate is a parallel git worktree.</div>
+      <div class="card"><b>Coding agent inside a coding agent.</b> Overmind's inner Claude-style agent (<code>coding_agent/agent.py</code>, ~180 LOC, <code>MAX_STEPS=50</code>, doom-loop guard) applies plans in worktrees. Overmind is <i>also</i> invokable from Claude Code / Cursor via three Agent Skills.</div>
+      <div class="card"><b>Policy-driven.</b> Optimization is anchored to a domain <code>policies.md</code> + a strict <code>eval_spec.json</code> (weights must sum to 100) + a <code>dataset.json</code>. No policy → no signal → no optimization.</div>
+      <div class="card"><b>Regression-aware acceptance.</b> A candidate is promoted only if it passes byte-equality on <code>read_only_paths</code>, the data-leakage detector, the 4-tier score threshold, the complexity penalty (capped at 60% of raw gain), and a holdout probe.</div>
+    </div>
+  </section>
+
+  <section>
+    <h2>1 · System architecture</h2>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TB
+    subgraph FrontDoors["Front doors"]
+        CLI[overmind CLI<br/>init / agent / setup<br/>optimize / optimize-step / doctor]
+        Skills[3 Agent Skills<br/>register / spec / optimize]
+        Host[Host coding agent<br/>Claude Code / Cursor]
+    end
+    subgraph Core["Optimizer (overmind/optimize/optimizer.py ~2.5k LOC)"]
+        Orch[Optimizer state machine]
+        Steps[steps/<br/>baseline · diagnose · evaluate · accept · report]
+        State[(run_state.json<br/>cross-run memory)]
+    end
+    subgraph Brains["Brains"]
+        Analyzer[analyzer.py ~2.1k LOC<br/>DIAGNOSIS + CODEGEN prompts<br/>compute_focus_weights]
+        CodingAgent[coding_agent/<br/>Claude-style inner agent<br/>MAX_STEPS=50, doom-loop guard]
+        Evaluator[evaluator.py ~1.1k LOC<br/>4-layer scoring<br/>mech · LLM-judge · tools · types]
+    end
+    subgraph Execution["Per-candidate execution"]
+        Worktree[git worktree per candidate]
+        Runner[runner.py ~1.4k LOC<br/>subprocess + uv venv]
+        Shadow[shadow_runtime.py<br/>Replay / Simulate / Passthrough]
+        Cassette[(cassette.jsonl<br/>SHA-256 keyed)]
+    end
+    subgraph Memory["Persistent state (.overmind/)"]
+        Reg[(agents.toml)]
+        Spec[(policies.md<br/>eval_spec.json<br/>dataset.json)]
+        FR[(FailureRegistry<br/>open→resolved→regressed)]
+        Snap[(accepted_snapshots)]
+    end
+    subgraph Telemetry["Observability"]
+        OTel[OpenTelemetry<br/>W3C traceparent stitching]
+        Prov[Provenance: 6 SourceTags<br/>→ Confidence 0.0–1.0]
+        Backend[Overmind cloud backend]
+    end
+    Host --> Skills --> CLI --> Core
+    Orch --> Steps --> Analyzer
+    Analyzer --> CodingAgent
+    CodingAgent --> Worktree
+    Worktree --> Runner --> Shadow --> Cassette
+    Runner --> Evaluator
+    Evaluator -- score.json --> Steps
+    Steps --> State
+    Core --> Memory
+    Runner -- spans --> OTel --> Prov --> Backend
+      </div>
+    </div>
+    <p>The whole system is a Python parent process orchestrating a fan-out of subprocesses. Each per-case agent evaluation is a fresh subprocess; W3C <code>traceparent</code> is injected into env so spans nest under the optimizer's root and form a single unified trace — <i>"every per-case agent evaluation spans are linked back to the optimizer's parent span, forming a single unified trace instead of many orphan traces."</i></p>
+  </section>
+
+  <section>
+    <h2>2 · The optimization loop</h2>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TB
+    Start([overmind optimize agent]) --> Init[Init: load bundle<br/>policies + eval_spec + dataset]
+    Init --> Baseline[Phase 1: Baseline<br/>run unmodified agent on train split<br/>record _baseline_train_score]
+    Baseline --> Iter{Iteration k &lt; N?<br/>default N=5}
+    Iter -- yes --> Diag[Diagnose<br/>analyzer LLM proposes M plans<br/>each plan = focus_area + PROMPT.md]
+    Diag --> Fork[Fork M git worktrees<br/>1 per candidate]
+    Fork --> Apply[Inner coding agent applies plan<br/>read/write/edit/grep/glob/bash/apply_patch]
+    Apply --> Eval[Evaluate each worktree<br/>subprocess run on train split<br/>4-layer score → score.json]
+    Eval --> Accept{Accept gates<br/>1 · read-only byte-equality<br/>2 · noise / net / magnitude / threshold<br/>3 · complexity penalty cap 60%<br/>4 · data-leakage detector}
+    Accept -- best &gt; current --> Promote[Promote winner<br/>snapshot for rollback]
+    Accept -- none pass --> Skip[Record failed_attempts<br/>continue]
+    Promote --> Holdout[Holdout probe<br/>score on held-out split]
+    Holdout --> Persist[Update FailureRegistry<br/>open → resolved / regressed]
+    Skip --> Persist
+    Persist --> Iter
+    Iter -- no --> Backtest[Phase 3: Model backtest<br/>re-evaluate across model IDs]
+    Backtest --> Report[Phase 4: Report<br/>experiments/best_agent.py<br/>experiments/report.md]
+    Report --> End([User commits diff])
+      </div>
+    </div>
+    <p>Four phases: <b>Baseline → Optimization loop → Model backtest → Report</b>. The default optimization loop runs 5 iterations; each iteration runs N candidates in parallel worktrees. The state is held in <code class="code-ref">optimizer.py</code> and persisted between runs in <code>run_state.json</code> — capped at 50 entries each for <code>failed_attempts</code> and <code>successful_changes</code>.</p>
+  </section>
+
+  <section>
+    <h2>3 · A single candidate, end-to-end</h2>
+    <div class="diagram">
+      <div class="mermaid">
+sequenceDiagram
+    participant O as Optimizer
+    participant A as Analyzer LLM
+    participant W as Worktree (per candidate)
+    participant C as Inner coding agent
+    participant T as Tools (read/edit/bash/...)
+    participant S as Subprocess runner
+    participant E as Evaluator
+    O->>A: diagnose(case_results, bundle, weights)
+    A-->>O: M plans { focus_area, PROMPT.md, plan.json }
+    loop for each candidate
+        O->>W: git worktree add
+        O->>C: launch with PROMPT.md, MAX_STEPS=50
+        loop ≤50 steps
+            C->>T: tool call (e.g. edit)
+            T->>T: FileTracker.assert_fresh()<br/>(mtime+size check)
+            T-->>C: ToolResult
+            Note over C: doom-loop guard: same call 3× → abort
+        end
+        C-->>O: edits applied
+        O->>S: spawn agent subprocess (uv venv)<br/>inject W3C traceparent
+        S-->>E: per-case outputs + spans
+        E->>E: 4-layer score<br/>(mech · LLM-judge · tools · type)
+        E-->>O: score.json { avg_total }
+    end
+    O->>O: accept_step gates<br/>read-only byte-eq · complexity · holdout
+    O->>O: snapshot accepted code
+      </div>
+    </div>
+    <p>The inner coding agent uses the same patterns that Claude Code / Codex / OpenCode use externally: a tight tool-call loop, file tracker with stale-read detection, doom-loop guard. <code>FileTracker</code> enforces <i>read-before-write</i> (raises <code>FileNotReadError</code>) and compares <code>mtime + size</code> on every edit (raises <code>FileStaleError</code>).</p>
+  </section>
+
+  <section>
+    <h2>4 · Acceptance gates — the regression-aware filter</h2>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart LR
+    In([N candidate scores]) --> G1{Read-only<br/>byte-equality<br/>across read_only_paths}
+    G1 -- diff detected --> R1[reject:<br/>touched protected file]
+    G1 -- ok --> G2{Data-leakage<br/>detector<br/>training outputs in code?}
+    G2 -- leak --> R2[reject:<br/>memorization]
+    G2 -- ok --> G3{raw_gain =<br/>cand_score − best_score}
+    G3 --> G4[complexity penalty<br/>quadratic ramps:<br/>· prompt &gt;2× baseline<br/>· LOC &gt;2.5× baseline<br/>· branch proliferation<br/>· structure w/o functions<br/>cap = 60% of raw_gain]
+    G4 --> G5{4-tier acceptance<br/>noise / net / magnitude / threshold}
+    G5 -- pass --> G6{Holdout probe<br/>score on held-out split}
+    G5 -- fail --> R3[reject:<br/>below threshold]
+    G6 -- ok --> Acc[accept &amp; snapshot]
+    G6 -- regress --> R4[reject:<br/>overfit to train]
+      </div>
+    </div>
+    <p>This is the most distinctive piece. Where most agents accept whatever the model outputs, Overmind treats every candidate edit as a <b>scientific claim</b> that must clear five independent filters. The system prompt for the inner coding agent explicitly forbids hardcoding test-input responses, and the optimizer's data-leakage detector cross-checks candidate code against training expected outputs.</p>
+  </section>
+
+  <section>
+    <h2>5 · Scoring — 4 layers, weights sum to 100</h2>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TB
+    Out([Candidate run outputs])
+    Out --> L1[Layer 1: Mechanical<br/>schema · enum · types · presence]
+    Out --> L2[Layer 2: LLM-as-judge<br/>against policies.md<br/>fallback: text similarity]
+    Out --> L3[Layer 3: Tool usage<br/>required tools called?<br/>correct args / order?]
+    Out --> L4[Layer 4: Type correctness<br/>output type ∈ text/enum/number/boolean<br/>max −10 penalty]
+    L1 --> Mix[Weighted aggregate<br/>weights sum = 100<br/>per eval_spec.json]
+    L2 --> Mix
+    L3 --> Mix
+    L4 --> Mix
+    Mix --> Score([avg_total ∈ 0–100])
+    Score --> Comp[Apply complexity penalty<br/>capped at 60% of raw gain]
+    Comp --> Final([final score for accept_step])
+      </div>
+    </div>
+    <p>Output types are deliberately constrained to <code>text | enum | number | boolean</code>. This keeps both the LLM-as-judge layer cheap and the mechanical layer decisive. The <i>"weights sum to exactly 100 via formula-driven allocation"</i> rule is enforced as a hard validation gate during spec generation — no fuzzy weighting.</p>
+  </section>
+
+  <section>
+    <h2>6 · Execution backends — Subprocess → Shadow → Static</h2>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TB
+    Call([Evaluate candidate])
+    Call --> Try1[Subprocess backend<br/>real venv, real LLM calls,<br/>real tools, real network]
+    Try1 -- ok --> Score1[score &amp; spans<br/>SourceTag = Real]
+    Try1 -- recoverable failure --> Try2[Shadow backend<br/>real subprocess, real LLM,<br/>cassette-replayed HTTP/tools/browser]
+    Try2 -- ok --> Score2[score &amp; spans<br/>SourceTag = ShadowReplay]
+    Try2 -- non-recoverable --> Try3[Static backend<br/>no execution; reason from<br/>code + cached traces only]
+    Try3 --> Score3[score &amp; spans<br/>SourceTag = StaticOnly]
+    Score1 --> Conf{Confidence aggregation<br/>0.0–1.0}
+    Score2 --> Conf
+    Score3 --> Conf
+    Conf -- high --> Auto[auto-accept eligible]
+    Conf -- medium --> Flag[flag for review]
+    Conf -- low --> Reject[reject signal]
+      </div>
+    </div>
+    <p><b>Provenance-aware optimization.</b> Every span carries one of six <code>SourceTag</code> levels (real subprocess → real LLM → real code → cassette replay → simulation → static-only). They aggregate into a numeric <code>Confidence</code> ∈ <code>[0.0, 1.0]</code> per candidate. Design principle from the source: <i>"Overmind can still reason about an agent when it cannot fully execute it, but it must never pretend simulated signal is the same as real signal."</i> LLM calls always run real, even in shadow mode — replaying LLMs would zero out the optimization signal.</p>
+  </section>
+
+  <section>
+    <h2>7 · FailureRegistry — cross-run failure memory</h2>
+    <div class="diagram">
+      <div class="mermaid">
+stateDiagram-v2
+    [*] --> Open: new failure cluster<br/>SHA-256(failing fields × tool patterns)
+    Open --> Resolved: candidate passes this cluster
+    Resolved --> Regressed: later candidate fails it again
+    Regressed --> Resolved: subsequent candidate fixes it
+    Resolved --> [*]: persists across runs<br/>via run_state.json
+      </div>
+    </div>
+    <p>Cases that share the same <i>structural signature</i> — failing output fields crossed with tool-call patterns — are clustered by SHA-256 hash. Clusters get a lifecycle (<code>open → resolved → regressed</code>) that persists in <code>run_state.json</code> across <code>overmind optimize</code> invocations. This turns "did we fix this last time?" into a first-class signal the analyzer can target.</p>
+  </section>
+
+  <section>
+    <h2>8 · The two execution modes — Path A vs Path B</h2>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart LR
+    User([Developer in Claude Code / Cursor])
+    User --> S1[/overmind-register-agent/]
+    S1 --> S1a[Pick analyzer provider + model<br/>write .overmind/.env placeholders]
+    S1a --> S1b((Mandatory<br/>Keys Pause))
+    S1b --> S1c[Build interaction harness<br/>validate via overmind agent validate]
+    S1c --> S2[/overmind-generate-spec-and-dataset/]
+    S2 --> S2a[Generate policies.md<br/>+ eval_spec.json<br/>+ dataset.json]
+    S2a --> S2b{Validation gates<br/>· optimizable globs expand<br/>· entrypoint ∉ optimizable<br/>· weights sum = 100<br/>· transient-error quarantine}
+    S2b --> S3[/overmind-optimize-agent/]
+    S3 --> Choose{Execution mode}
+    Choose -- Path A --> A[overmind optimize<br/>end-to-end CLI<br/>rich dashboard<br/>host agent stops]
+    Choose -- Path B --> B[overmind optimize-step<br/>host agent loops<br/>own subagents per candidate<br/>strictly serial]
+    A --> R[experiments/best_agent.py<br/>experiments/report.md]
+    B --> R
+      </div>
+    </div>
+    <p>Three Agent Skills under <code>overmind/skills/</code> turn Overmind into a Claude-Code-loadable workflow. The skills are deliberately split: <b>deterministic Python scripts</b> handle registry lookups and env validation; <b>coding-agent reasoning</b> handles schema inference and harness design. Path B is interesting because it lets the host agent (Claude Code) be the <i>editor</i> for each candidate worktree — a coding agent driving a coding agent driving a coding agent.</p>
+  </section>
+
+  <section>
+    <h2>9 · Where the code lives</h2>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart LR
+    subgraph Pkg["overmind/ package"]
+        cli[cli.py<br/>argparse dispatcher]
+        cmds[commands/<br/>init · agent · setup · optimize · optimize-step]
+        core[core/<br/>registry · paths · constants · logging]
+        setup[setup/<br/>agent_analyzer · policy_generator · spec_generator · questionnaire]
+        subgraph Opt["optimize/ — the brain"]
+            optimizer[optimizer.py ~2.5k]
+            analyzer[analyzer.py ~2.1k]
+            evaluator[evaluator.py ~1.1k]
+            runner[runner.py ~1.4k]
+            shadow[shadow_runtime.py ~450]
+            fc[failure_classifier.py ~280<br/>11-mode taxonomy]
+            fr[failure_registry.py]
+            bf[bundle_factory.py ~240<br/>BFS over imports]
+            cass[cassette.py]
+            prov[provenance.py]
+            backend[execution_backend.py]
+            scoring[pipeline/scoring.py<br/>complexity penalty]
+            steps[steps/<br/>init · baseline · diagnose · evaluate · accept · report]
+        end
+        subgraph CA["coding_agent/"]
+            ca_agent[agent.py ~180<br/>MAX_STEPS=50<br/>doom-loop guard]
+            ca_prompt[system_prompt.py<br/>no hardcoded test inputs]
+            ca_tracker[file_tracker.py<br/>read-before-write<br/>stale-read detection]
+            ca_tools[tools/<br/>read · write · edit · grep<br/>glob · bash · apply_patch]
+        end
+        prompts[prompts/<br/>analyzer · evaluator · policy · spec]
+        skills[skills/<br/>3 SKILL.md folders]
+        storage[storage/ + openapi_client/<br/>backend sync]
+        tracing[tracing.py<br/>@observe @entry_point @workflow @tool]
+        wrap[entrypoint_wrapper.py<br/>JSON-stdio shim]
+    end
+    cli --> cmds --> Opt
+    Opt --> CA
+    cmds --> setup
+    cmds --> storage
+    runner --> wrap
+    wrap --> tracing
+      </div>
+    </div>
+    <table class="matrix">
+      <thead><tr><th>Path</th><th>~LOC</th><th>Role</th></tr></thead>
+      <tbody>
+        <tr><td><code>optimize/optimizer.py</code></td><td>~2,500</td><td><code>Optimizer</code> class — orchestrates the whole pipeline, holds <code>best_score</code>, <code>accepted_snapshots</code></td></tr>
+        <tr><td><code>optimize/analyzer.py</code></td><td>~2,100</td><td>Diagnosis + codegen prompts; <code>compute_focus_weights()</code> ranks focus areas</td></tr>
+        <tr><td><code>optimize/runner.py</code></td><td>~1,400</td><td>Subprocess agent execution, uv venv provisioning, W3C traceparent injection</td></tr>
+        <tr><td><code>optimize/evaluator.py</code></td><td>~1,100</td><td>4-layer scoring engine</td></tr>
+        <tr><td><code>optimize/shadow_runtime.py</code></td><td>~450</td><td>Bootstrap injected into subprocesses for Replay / Simulate / Passthrough</td></tr>
+        <tr><td><code>optimize/failure_classifier.py</code></td><td>~280</td><td>11-mode taxonomy + <code>is_recoverable_via_shadow()</code></td></tr>
+        <tr><td><code>optimize/bundle_factory.py</code></td><td>~240</td><td>BFS over the import graph from entrypoint → <code>AgentBundle</code></td></tr>
+        <tr><td><code>coding_agent/agent.py</code></td><td>~180</td><td>Inner tool-call loop; <code>MAX_STEPS=50</code>; doom-loop guard</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>10 · Security &amp; reliability</h2>
+    <table class="matrix">
+      <tbody>
+        <tr><td><b>Bash tool sandboxing</b></td><td><span class="partial">~</span> <code>subprocess.run(..., shell=True)</code> with no chroot/container; default 120s timeout. Only a system-prompt guideline asks the agent to prefer dedicated tools.</td></tr>
+        <tr><td><b>Filesystem safety</b></td><td><span class="yes">✓</span> <code>FileTracker</code> enforces read-before-write (<code>FileNotReadError</code>) and stale-read detection via mtime + size (<code>FileStaleError</code>). Per-path locks for thread safety.</td></tr>
+        <tr><td><b>Read-only enforcement</b></td><td><span class="yes">✓</span> <code>accept_step</code> byte-equality-checks every <code>read_only_path</code> after candidate edits — any change ⇒ reject.</td></tr>
+        <tr><td><b>Worktree isolation</b></td><td><span class="yes">✓</span> One git worktree per candidate ⇒ parallel edits never collide on disk.</td></tr>
+        <tr><td><b>Secrets</b></td><td>Single <code>.overmind/.env</code> file (no per-agent envs, deliberately, to avoid placeholder shadowing); skills enforce a hard "Mandatory Keys Pause" gate; <code>key_ok()</code> rejects <code>&lt;set-me&gt;</code>/empty patterns.</td></tr>
+        <tr><td><b>Anti-overfitting</b></td><td><span class="yes">✓</span> Holdout probe · complexity penalty · data-leakage detector · system prompt forbidding test-input hardcoding · accept_step rejection of memorized examples.</td></tr>
+        <tr><td><b>Failure taxonomy</b></td><td>11 modes: <code>IMPORT_ERROR · MODULE_LEVEL_CRASH · MISSING_DEPENDENCY · API_KEY_MISSING · BROWSER_RUNTIME_ERROR · NETWORK_ERROR · TIMEOUT · SCHEMA_MISMATCH · CRASH · UNKNOWN · NONE</code></td></tr>
+        <tr><td><b>Retries / robustness</b></td><td>Analyzer shrinks case counts on context overflow; LLM-judge retries with text-similarity fallback; OTel exporter has 10s flush timeout; subprocess timeouts default 120s; capped attempt/success lists at 50.</td></tr>
+        <tr><td><b>Trust model</b></td><td>Designed for the user's own machine. No sandbox like Codex's Landlock/seccomp/Seatbelt — security is "you trust your own agent's source code."</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>11 · Evaluation, tests, CI</h2>
+    <ul>
+      <li><b>~80+ pytest files</b> under <code>tests/</code> covering CLI, configs, analyzer, optimizer, policy/spec/dataset generators, evaluator, tracing (<code>test_tracer.py</code>, <code>test_spans.py</code>, <code>test_tracing_lifecycle.py</code>), execution backend, registry, bundling.</li>
+      <li><b>Make targets:</b> <code>make test</code> (parallel, <code>-n auto</code>, worksteal dist), <code>test-cov</code>, <code>test-serial</code>, <code>lint-check</code>, <code>lint-format</code>. Uses <code>uv run</code> when available, falls back to <code>python</code>. <code>test_spans.py</code> is excluded from parallel runs (OTel global-state).</li>
+      <li><b>CI workflows:</b>
+        <ul>
+          <li><code>ci.yml</code> — lint-only on PR / push to main, uv + Python 3.13.</li>
+          <li><code>pr-checks.yml</code> — pytest on Python 3.12 + a <b>version-bump check</b> that fails the PR if <code>pyproject.toml</code> version isn't strictly greater than <code>main</code>.</li>
+          <li><code>publish.yml</code> — PyPI release on tag.</li>
+          <li><code>test_io_from_sdk.yml</code> — SDK I/O contract tests.</li>
+        </ul>
+      </li>
+      <li><b>Public benchmark via examples.</b> The 8 baseline agents in <code>examples/</code> double as Overmind's own benchmark suite with published before/after deltas:
+        <ul>
+          <li><code>contract_extractor</code>: 74.3 → 94.1 (<b>+19.8</b>)</li>
+          <li><code>lead_qualifier</code>: 52.5 → 73.9 (<b>+21.4</b>)</li>
+        </ul>
+        Per the README: <i>"Baselines are intentionally leaky (vague prompts, thin tool docstrings, wrong model tier, unbounded iteration)."</i>
+      </li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>12 · Memory &amp; state</h2>
+    <p>Three concentric layers of state — per-run, per-agent, per-project:</p>
+    <table class="matrix">
+      <thead><tr><th>Layer</th><th>Where</th><th>What</th></tr></thead>
+      <tbody>
+        <tr><td>Per-project</td><td><code>.overmind/.env</code>, <code>.overmind/agents.toml</code></td><td>Shared secrets · agent registry (<code>name → module.path:function</code>)</td></tr>
+        <tr><td>Per-agent (spec)</td><td><code>.overmind/agents/&lt;name&gt;/setup_spec/</code></td><td><code>policies.md</code> · <code>eval_spec.json</code> · <code>dataset.json</code></td></tr>
+        <tr><td>Per-agent (memory)</td><td><code>.overmind/agents/&lt;name&gt;/run_state.json</code></td><td>Atomic-write JSON of prior baselines, capped 50× failed_attempts &amp; successful_changes, regression_cases, FailureRegistry clusters, component_weights</td></tr>
+        <tr><td>Per-agent (artifacts)</td><td><code>.../experiments/</code>, <code>.../instrumented/</code></td><td><code>best_agent.py</code> · <code>report.md</code> · processed copy of source</td></tr>
+        <tr><td>Per-run (in-memory)</td><td><code>Optimizer</code> instance</td><td><code>best_score</code>, <code>best_code</code>, <code>best_case_scores</code>, <code>accepted_snapshots</code> (for rollback), <code>_failure_registry</code>, <code>_bundle</code></td></tr>
+        <tr><td>Cassettes</td><td><code>cassette.jsonl</code></td><td>SHA-256-keyed JSONL: <code>make_key(kind|identifier|canonical(payload))</code></td></tr>
+      </tbody>
+    </table>
+    <p><b>Explicit cross-run learning:</b> <code>seed_failed_attempts()</code> and <code>seed_successful_changes()</code> warm-start the next <code>overmind optimize</code> invocation with the prior run's lessons. <i>This is the single biggest difference from "session-scoped" agents</i> like Claude Code or Codex.</p>
+  </section>
+
+  <section>
+    <h2>13 · Tools &amp; integration surfaces</h2>
+    <h3>Inner-agent tools</h3>
+    <p>First-party Python only — no MCP/plugin layer. Tools live in <code>overmind/coding_agent/tools/</code> and implement a <code>ToolBase</code> Protocol returning <code>ToolResult{output, title, metadata}</code>. The <code>ToolContext</code> carries <code>session_id</code>, <code>worktree</code>, <code>cwd</code>, and FileTracker hooks. Schemas convert to OpenAI function-call format via <code>schema_to_openai()</code>.</p>
+    <table class="matrix">
+      <thead><tr><th>Tool</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td><code>read</code></td><td>Records into FileTracker for later staleness checks</td></tr>
+        <tr><td><code>write</code></td><td>Requires prior <code>read</code> on existing files (<code>FileNotReadError</code> otherwise)</td></tr>
+        <tr><td><code>edit</code></td><td>mtime + size verified against last read; raises <code>FileStaleError</code> on drift</td></tr>
+        <tr><td><code>grep</code> / <code>glob</code></td><td>Read-only discovery</td></tr>
+        <tr><td><code>bash</code></td><td><code>subprocess.run(..., shell=True)</code> in <code>ctx.cwd</code>; 120s default timeout; no allowlist</td></tr>
+        <tr><td><code>apply_patch</code></td><td>Unified-diff application</td></tr>
+      </tbody>
+    </table>
+    <h3>Outer integration: 3 Agent Skills</h3>
+    <p>Three SKILL.md folders in <code>overmind/skills/</code> turn Overmind into a Claude-Code-loadable workflow: <code>/overmind-register-agent</code>, <code>/overmind-generate-spec-and-dataset</code>, <code>/overmind-optimize-agent</code>. Each skill carefully splits <b>deterministic Python scripts</b> (registry lookups, env validation) from <b>coding-agent reasoning</b> (schema inference, harness design).</p>
+    <h3>Auto-instrumentation</h3>
+    <p>The package depends on <code>overmind-instrumentation-anthropic</code>, <code>overmind-instrumentation-openai</code>, <code>overmind-instrumentation-google-generativeai</code>, <code>overmind-instrumentation-agno</code>, and <code>opentelemetry-overmind</code> — OTel auto-instrumentation for the major LLM SDKs.</p>
+  </section>
+
+  <section>
+    <h2>14 · How it differs from the other 6 agents</h2>
+    <table class="matrix">
+      <thead><tr><th>Dimension</th><th>Overmind</th><th>Coding agents (Claude Code, Codex, OpenCode, Pi, Hermes)</th></tr></thead>
+      <tbody>
+        <tr><td>Primary user goal</td><td>Improve an existing agent's metrics</td><td>Solve a user task end-to-end</td></tr>
+        <tr><td>Loop driver</td><td>Eval-score gradient (best-of-N + accept gate)</td><td>Tool-call loop until LLM stops emitting tools</td></tr>
+        <tr><td>Edits applied by</td><td><i>Internal</i> coding agent, in a <i>worktree per candidate</i></td><td>The agent itself, directly in the working tree</td></tr>
+        <tr><td>Distinctive concept</td><td>Policy + eval_spec + dataset + FailureRegistry</td><td>System prompt + tools</td></tr>
+        <tr><td>Trace handling</td><td>First-class OTel; W3C traceparent across all subprocesses; 6-tier provenance with confidence scoring</td><td>Usually local logs</td></tr>
+        <tr><td>Acceptance</td><td>5 independent gates: byte-equality · data-leakage · 4-tier score · complexity penalty (60% cap) · holdout probe</td><td>N/A — every action accepted</td></tr>
+        <tr><td>Cross-run memory</td><td><code>run_state.json</code> + FailureRegistry with <code>open→resolved→regressed</code> lifecycle</td><td>Usually none (per-session)</td></tr>
+        <tr><td>Sandboxing</td><td>Subprocess + venv + worktree per candidate; cassette/shadow for non-LLM externalities</td><td>Codex uses OS-enforced; others use permission prompts</td></tr>
+        <tr><td>Tool extension</td><td>First-party Python only — no MCP</td><td>Most support MCP, skills, plugins</td></tr>
+        <tr><td>Integration vector</td><td>Loaded <i>into</i> host coding agents via 3 Skills</td><td>Standalone CLI</td></tr>
+      </tbody>
+    </table>
+    <p class="callout">One-liner: <i>Overmind is the only one that runs a coding-agent inside another coding-agent, evaluates the outer agent under a regression-aware policy, and persists failure clusters across runs.</i></p>
+  </section>
+
+  <section>
+    <h2>15 · Strengths &amp; tradeoffs</h2>
+    <div class="cards">
+      <div class="card">
+        <div class="icon">💪</div>
+        <h4>Strengths</h4>
+        <ul>
+          <li><b>Real anti-overfitting machinery</b> — 5 gates, holdout probe, leakage detector, complexity cap</li>
+          <li><b>Cross-run learning</b> via FailureRegistry, not just per-session</li>
+          <li><b>Unified tracing</b> — parent-span stitching across every subprocess</li>
+          <li><b>Provenance honesty</b> — simulated signal ≠ real signal, by design</li>
+          <li><b>Composes with Claude Code / Cursor</b> via 3 Skills</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="icon">⚖️</div>
+        <h4>Tradeoffs</h4>
+        <ul>
+          <li><b>Alpha</b> — v0.1.49, ~12 stars, expect API churn</li>
+          <li><b>No top-level LICENSE file</b> (only pyproject classifier)</li>
+          <li><b>Docs are placeholders</b> — <code>docs/agent-improvement.md</code> and <code>docs/tracing.md</code> are 0 bytes</li>
+          <li><b>Hosted docs gated</b> behind Cloudflare</li>
+          <li><b>Inner bash tool is permissive</b> (<code>shell=True</code>, no allowlist) — fine for trusted local use, not for hostile inputs</li>
+          <li><b>No MCP</b> — first-party Python tools only</li>
+          <li><b>Cost model</b> — repeated agent runs across N candidates × K iterations gets expensive without cassettes</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>16 · Five takeaways</h2>
+    <ol>
+      <li><b>Optimization is the new agent surface.</b> Once you have a working agent, the next problem is "make it 20 points better on my eval." Overmind treats that as a first-class workflow.</li>
+      <li><b>Acceptance gates &gt; raw scores.</b> A score going up is necessary, not sufficient. Regression-awareness, complexity penalty, and holdout probes prevent the easy wins from being illusions.</li>
+      <li><b>Provenance matters.</b> The 6-tier SourceTag hierarchy + <code>Confidence ∈ [0.0, 1.0]</code> is a clean answer to "how much should I trust this number?"</li>
+      <li><b>Cross-run failure memory.</b> Most agents forget between sessions. FailureRegistry persists clusters with a lifecycle — and the analyzer can target them.</li>
+      <li><b>Coding agents are infrastructure.</b> The inner coding agent here is ~180 LOC because the patterns (tool-call loop, FileTracker, doom-loop guard) are now well-understood. The action has moved up the stack — to <i>what you point them at</i>.</li>
+    </ol>
+  </section>
+</main>
+<footer class="site-footer">
+  AI Agent Architecture Series · <a href="https://github.com/humanjack/ai-engineering">repo</a>
+</footer>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script src="_shared.js"></script>
+</body>
+</html>

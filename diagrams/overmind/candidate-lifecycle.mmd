@@ -1,0 +1,27 @@
+sequenceDiagram
+    participant O as Optimizer
+    participant A as Analyzer LLM
+    participant W as Worktree (per candidate)
+    participant C as Inner coding agent
+    participant T as Tools (read/edit/bash/...)
+    participant S as Subprocess runner
+    participant E as Evaluator
+    O->>A: diagnose(case_results, bundle, weights)
+    A-->>O: M plans { focus_area, PROMPT.md, plan.json }
+    loop for each candidate
+        O->>W: git worktree add
+        O->>C: launch with PROMPT.md, MAX_STEPS=50
+        loop ≤50 steps
+            C->>T: tool call (e.g. edit)
+            T->>T: FileTracker.assert_fresh()<br/>(mtime+size check)
+            T-->>C: ToolResult
+            Note over C: doom-loop guard: same call 3× → abort
+        end
+        C-->>O: edits applied
+        O->>S: spawn agent subprocess (uv venv)<br/>inject W3C traceparent
+        S-->>E: per-case outputs + spans
+        E->>E: 4-layer score<br/>(mech · LLM-judge · tools · type)
+        E-->>O: score.json { avg_total }
+    end
+    O->>O: accept_step gates<br/>read-only byte-eq · complexity · holdout
+    O->>O: snapshot accepted code

@@ -1,0 +1,12 @@
+flowchart LR
+    In([N candidate scores]) --> G1{Read-only<br/>byte-equality<br/>across read_only_paths}
+    G1 -- diff detected --> R1[reject:<br/>touched protected file]
+    G1 -- ok --> G2{Data-leakage<br/>detector<br/>training outputs in code?}
+    G2 -- leak --> R2[reject:<br/>memorization]
+    G2 -- ok --> G3{raw_gain =<br/>cand_score − best_score}
+    G3 --> G4[complexity penalty<br/>quadratic ramps:<br/>· prompt &gt;2× baseline<br/>· LOC &gt;2.5× baseline<br/>· branch proliferation<br/>· structure w/o functions<br/>cap = 60% of raw_gain]
+    G4 --> G5{4-tier acceptance<br/>noise / net / magnitude / threshold}
+    G5 -- pass --> G6{Holdout probe<br/>score on held-out split}
+    G5 -- fail --> R3[reject:<br/>below threshold]
+    G6 -- ok --> Acc[accept &amp; snapshot]
+    G6 -- regress --> R4[reject:<br/>overfit to train]

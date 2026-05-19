@@ -1,0 +1,13 @@
+stateDiagram-v2
+    [*] --> Open: new failure cluster<br/>SHA-256(failing fields × tool patterns)
+    Open --> Resolved: candidate passes this cluster
+    Resolved --> Regressed: later candidate fails it again
+    Regressed --> Resolved: subsequent candidate fixes it
+    Resolved --> [*]: persists across runs<br/>via run_state.json
+    note right of Open
+        FailureRegistry clusters cases
+        by structural signature so the
+        analyzer can target persistent
+        failure modes — not just
+        per-iteration noise.
+    end note

@@ -1,0 +1,39 @@
+flowchart LR
+    subgraph Pkg["overmind/ package"]
+        cli[cli.py<br/>argparse dispatcher]
+        cmds[commands/<br/>init · agent · setup · optimize · optimize-step]
+        core[core/<br/>registry · paths · constants · logging]
+        setup[setup/<br/>agent_analyzer · policy_generator · spec_generator · questionnaire]
+        subgraph Opt["optimize/ — the brain"]
+            optimizer[optimizer.py ~2.5k]
+            analyzer[analyzer.py ~2.1k]
+            evaluator[evaluator.py ~1.1k]
+            runner[runner.py ~1.4k]
+            shadow[shadow_runtime.py ~450]
+            fc[failure_classifier.py ~280<br/>11-mode taxonomy]
+            fr[failure_registry.py]
+            bf[bundle_factory.py ~240<br/>BFS over imports]
+            cass[cassette.py]
+            prov[provenance.py]
+            backend[execution_backend.py]
+            scoring[pipeline/scoring.py<br/>complexity penalty]
+            steps[steps/<br/>init · baseline · diagnose · evaluate · accept · report]
+        end
+        subgraph CA["coding_agent/"]
+            ca_agent[agent.py ~180<br/>MAX_STEPS=50<br/>doom-loop guard]
+            ca_prompt[system_prompt.py<br/>no hardcoded test inputs]
+            ca_tracker[file_tracker.py<br/>read-before-write<br/>stale-read detection]
+            ca_tools[tools/<br/>read · write · edit · grep<br/>glob · bash · apply_patch]
+        end
+        prompts[prompts/<br/>analyzer · evaluator · policy · spec]
+        skills[skills/<br/>3 SKILL.md folders]
+        storage[storage/ + openapi_client/<br/>backend sync]
+        tracing[tracing.py<br/>@observe @entry_point @workflow @tool]
+        wrap[entrypoint_wrapper.py<br/>JSON-stdio shim]
+    end
+    cli --> cmds --> Opt
+    Opt --> CA
+    cmds --> setup
+    cmds --> storage
+    runner --> wrap
+    wrap --> tracing
