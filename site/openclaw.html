@@ -51,43 +51,25 @@
     <div class="diagram">
       <div class="mermaid">
 flowchart TB
-    subgraph Clients["Clients"]
-        CLI[openclaw CLI / TUI]
-        Menu[macOS menu bar]
-        Mobile[iOS / Android Nodes]
-        Web[Web UI]
-    end
-    subgraph Gateway["Gateway (single daemon per host)"]
-        WS[WebSocket control plane]
-        Inbox[Multi-channel inbox]
-        Ctx[Context Engine plugin]
-        SessionMgr[SessionManager guarded]
-        Cron[Cron scheduler]
-        Hooks[Hooks - internal + plugin]
-        MCP[MCP server / client]
-        Sandbox[Docker / SSH / OpenShell]
-    end
-    subgraph PiEmbedded["Embedded Pi runtime"]
-        AgentSess[pi-coding-agent createAgentSession]
-        AgentLoop[Pi runLoop]
-        Tools[Custom tools + Pi codingTools]
-    end
-    subgraph Channels["Channels (22+)"]
-        WA[WhatsApp]
-        TG[Telegram]
-        Disc[Discord]
-        Slack[Slack]
-        iMsg[iMessage]
-        Etc[+17 more]
-    end
-    Clients --> WS
-    Channels --> Inbox
-    Inbox --> SessionMgr
-    SessionMgr --> AgentSess
-    AgentSess --> AgentLoop
-    AgentLoop --> Tools
-    Tools -.may use.-> Sandbox
-    Hooks -.fires around.-> AgentLoop
+    Clients["<b>Clients</b><br/><span style='font-size:12px;color:#475569'>openclaw CLI/TUI · macOS menu bar<br/>iOS/Android Nodes · Web UI</span>"]
+    Channels["<b>Channels (22+)</b><br/><span style='font-size:12px;color:#475569'>WhatsApp · Telegram · Discord · Slack<br/>iMessage · Signal · Matrix · +15 more</span>"]
+    Gateway["<b>Gateway — single daemon per host</b><br/><span style='font-size:12px;color:#475569'>WebSocket control plane · Multi-channel inbox<br/>Context Engine · SessionManager (guarded)<br/>Cron · Hooks (internal + plugin) · MCP server/client</span>"]
+    PiEmbedded["<b>Embedded Pi runtime</b><br/><span style='font-size:12px;color:#475569'>pi-coding-agent createAgentSession<br/>Pi runLoop · Custom tools + Pi codingTools</span>"]
+    Sandbox["<b>Sandbox backends</b><br/><span style='font-size:12px;color:#475569'>Docker · SSH · OpenShell</span>"]
+    Clients --> Gateway
+    Channels --> Gateway
+    Gateway --> PiEmbedded
+    PiEmbedded -.optional.-> Sandbox
+    classDef clients fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#1e1b4b
+    classDef channels fill:#ede9fe,stroke:#6d28d9,stroke-width:2px,color:#2e1065
+    classDef gw fill:#fef3c7,stroke:#a16207,stroke-width:2px,color:#422006
+    classDef pi fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#052e16
+    classDef sb fill:#fce7f3,stroke:#be185d,stroke-width:2px,color:#500724
+    class Clients clients
+    class Channels channels
+    class Gateway gw
+    class PiEmbedded pi
+    class Sandbox sb
       </div>
     </div>
     <p>The load-bearing line is <code class="code-ref">src/agents/pi-embedded-runner/run/attempt.ts:5</code>:</p>
