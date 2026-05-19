@@ -97,12 +97,46 @@ ul, ol { line-height: 1.65; color: #d6dcfb; }
   font-style: italic; color: var(--text);
 }
 
+/* ---- Diagram block: dark-mode-friendly, full-width SVGs ---- */
 .diagram {
-  background: #f7fafc; border-radius: 12px; padding: 20px;
-  margin: 16px 0; overflow: auto;
+  background: linear-gradient(180deg, #f4f6ff 0%, #e7ecff 100%);
+  border: 1px solid #c7d0ee;
+  border-radius: 12px; padding: 24px;
+  margin: 18px 0; overflow-x: auto;
+  box-shadow: 0 8px 24px -12px rgba(0, 0, 0, 0.5);
 }
-.diagram .mermaid { display: flex; justify-content: center; min-height: 100px; }
-.diagram-caption { color: var(--muted); font-size: 13px; text-align: center; margin-top: 6px; }
+.diagram .mermaid {
+  display: flex; justify-content: center;
+  min-height: 100px;
+  width: 100%;
+}
+/* Constrain SVGs in both dimensions so neither tall-narrow nor wide-short
+   diagrams blow up. max-height caps vertical, max-width caps horizontal,
+   `width:auto;height:auto` lets the browser preserve the viewBox aspect. */
+.diagram .mermaid svg {
+  max-width: 100% !important;
+  max-height: 70vh !important;
+  width: auto !important;
+  height: auto !important;
+  display: block;
+  margin: 0 auto;
+}
+/* Improve node text rendering inside diagrams */
+.diagram .mermaid .nodeLabel,
+.diagram .mermaid .edgeLabel,
+.diagram .mermaid foreignObject p,
+.diagram .mermaid foreignObject span {
+  font-family: 'Inter', system-ui, sans-serif !important;
+  color: #1e1b4b !important;
+  font-weight: 500;
+}
+/* Subgraph (cluster) labels: make them legible */
+.diagram .mermaid .cluster-label .nodeLabel,
+.diagram .mermaid .cluster-label foreignObject p {
+  font-weight: 700 !important;
+  color: #312e81 !important;
+}
+.diagram-caption { color: var(--muted); font-size: 13px; text-align: center; margin-top: 10px; }
 
 pre, code { font-family: var(--font-mono); font-size: 13px; }
 pre {

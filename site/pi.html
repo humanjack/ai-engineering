@@ -58,33 +58,21 @@
     <div class="diagram">
       <div class="mermaid">
 flowchart TB
-    subgraph UI["User Interfaces"]
-        TUI[coding-agent TUI]
-        Slack[mom — Slack bot]
-        Web[web-ui]
-        OC[OpenClaw — Telegram/Discord/...]
-    end
-    subgraph Core["agent-core — Runtime"]
-        Tree[AgentMessage tree]
-        Loop[agent-loop runLoop]
-        Tools[Tool executor]
-        Events[Event stream]
-        Steer[Steering / follow-up queue]
-    end
-    subgraph Ai["pi-ai — Unified LLM SDK"]
-        Stream[streamSimple / complete]
-        Cost[Token + cost tracking]
-        Ctx[Context serialization]
-    end
-    subgraph LLM["LLM Providers"]
-        Ant[Anthropic]
-        OAI[OpenAI]
-        Goog[Google]
-        Etc[+17 more]
-    end
+    UI["<b>UI Surfaces</b><br/><span style='font-size:12px;color:#475569'>coding-agent TUI · mom (Slack) · web-ui · OpenClaw (Telegram/Discord/…)</span>"]
+    Core["<b>agent-core — Runtime</b><br/><span style='font-size:12px;color:#475569'>AgentMessage tree · agent-loop runLoop · Tool executor<br/>Event stream · Steering / follow-up queue</span>"]
+    AI["<b>pi-ai — Unified LLM SDK</b><br/><span style='font-size:12px;color:#475569'>streamSimple / complete · Token + cost tracking<br/>Context serialization · Cross-provider handoffs</span>"]
+    LLM["<b>LLM Providers</b><br/><span style='font-size:12px;color:#475569'>Anthropic · OpenAI · Google · xAI · Mistral · +17 more</span>"]
     UI --> Core
-    Core --> Ai
-    Ai --> LLM
+    Core --> AI
+    AI --> LLM
+    classDef ui fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#1e1b4b
+    classDef core fill:#fef3c7,stroke:#a16207,stroke-width:2px,color:#422006
+    classDef ai fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#052e16
+    classDef llm fill:#fce7f3,stroke:#be185d,stroke-width:2px,color:#500724
+    class UI ui
+    class Core core
+    class AI ai
+    class LLM llm
       </div>
       <div class="diagram-caption">Four layers — UI surfaces talk to the runtime, the runtime talks to pi-ai, pi-ai talks to providers.</div>
     </div>
