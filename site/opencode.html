@@ -201,7 +201,117 @@ GIT_WORK_TREE=$worktree</code></pre>
   </section>
 
   <section>
-    <h2>10 · Strengths & Tradeoffs</h2>
+    <h2>10 · Deep Dive: Harness × Context × Memory</h2>
+    <p>OpenCode's distinguishing engineering trick is using <b>the compiler itself as a feedback channel</b>. The harness, context, and memory all bend around that goal.</p>
+
+    <h3>10.1 · Harness engineering — TS server owns the loop, Go TUI is just a renderer</h3>
+    <p>OpenCode ships one binary that contains two processes. The TS Hono server owns all logic and state; the Go Bubble Tea TUI is a thin renderer connected by HTTP + SSE + a long-poll inverse-RPC channel.</p>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart LR
+    Input["<b>User input</b><br/><span style='font-size:12px;color:#475569'>keystrokes captured by Go TUI</span>"]
+    Post["<b>POST /session/.../chat</b><br/><span style='font-size:12px;color:#475569'>blocking call to server</span>"]
+    Loop["<b>session/prompt.ts</b><br/><span style='font-size:12px;color:#475569'>explicit while(true)<br/>stopWhen: stepCountIs(1)<br/>plugin hooks between steps</span>"]
+    Tools["<b>Tool dispatch</b><br/><span style='font-size:12px;color:#475569'>built-in + custom + MCP<br/>tree-sitter bash perms<br/>shadow-git snapshot per edit</span>"]
+    SSE["<b>SSE /event stream</b><br/><span style='font-size:12px;color:#475569'>tokens · tool starts · tool results</span>"]
+    Render["<b>Go TUI renderer</b><br/><span style='font-size:12px;color:#475569'>+ inverse RPC GET /tui/control/next<br/>for server-initiated UI calls</span>"]
+    Input --> Post --> Loop
+    Loop --> Tools
+    Tools --> Loop
+    Loop --> SSE --> Render
+    Render -. "POST /tui/control/response" .-> Loop
+    classDef in fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#1e1b4b
+    classDef loop fill:#fef3c7,stroke:#a16207,stroke-width:2px,color:#422006
+    classDef tool fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#052e16
+    classDef io fill:#fce7f3,stroke:#be185d,stroke-width:2px,color:#500724
+    class Input,Post in
+    class Loop loop
+    class Tools tool
+    class SSE,Render io
+      </div>
+    </div>
+    <ul>
+      <li><b>Explicit loop</b> — the AI SDK is set to <code>stopWhen: stepCountIs(1)</code> so the server can run snapshots, plugin hooks, and tool dispatches between every step (<code class="code-ref">session/prompt.ts:225-427</code>)</li>
+      <li><b>Inverse RPC</b> — server pushes work to TUI via long-poll <code>GET /tui/control/next</code> (no WebSockets needed)</li>
+      <li><b>Per-edit shadow snapshot</b> — every <code>edit</code> creates a git-style snapshot in a side worktree; revert is one tool call</li>
+      <li><b>Tree-sitter bash permissions</b> — bash command strings are parsed; every <code>command</code> AST node is matched against agent's wildcard rules separately, so <code>git status; rm -rf /</code> doesn't sneak through</li>
+      <li><b>5 plugin hooks</b> — <code>chat.params</code> (mutate request), <code>tool.use.before</code>, <code>tool.use.after</code>, <code>chunk</code>, <code>session.end</code></li>
+    </ul>
+
+    <h3>10.2 · Context engineering — LSP as a context source, no embeddings</h3>
+    <p>OpenCode's context model is unusual: no vector DB, no embeddings, no semantic recall. Instead, the agent uses <b>ripgrep + LSP</b> as its primary retrieval tools. After each edit, the LSP synchronously feeds compiler diagnostics back into the next context window.</p>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TB
+    Sys["<b>System prompt build</b><br/><span style='font-size:12px;color:#475569'>provider-specific header (gpt-5_codex / claude / …)<br/>+ agent role + env + AGENTS.md walk-up</span>"]
+    Tools["<b>Resolved tools</b><br/><span style='font-size:12px;color:#475569'>built-in + custom (.md files) + MCP<br/>filtered by agent permission mask</span>"]
+    History["<b>Message history</b><br/><span style='font-size:12px;color:#475569'>filter compacted ranges<br/>inject mode-switch reminders<br/>JSON on disk per session</span>"]
+    Edit["<b>edit tool</b><br/><span style='font-size:12px;color:#475569'>writes change · waits up to 3s<br/>LSP.diagnostics() returns errors</span>"]
+    Feed["<b>Diagnostics in tool result</b><br/><span style='font-size:12px;color:#475569'>compiler errors appended to next turn<br/>model self-corrects automatically</span>"]
+    Call[(streamText)]
+    Sys --> Call
+    Tools --> Call
+    History --> Call
+    Call --> Edit
+    Edit --> Feed
+    Feed --> Call
+    classDef sys fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#1e1b4b
+    classDef tools fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#052e16
+    classDef hist fill:#fef3c7,stroke:#a16207,stroke-width:2px,color:#422006
+    classDef llm fill:#ede9fe,stroke:#6d28d9,stroke-width:2px,color:#2e1065
+    classDef ed fill:#fce7f3,stroke:#be185d,stroke-width:2px,color:#500724
+    class Sys sys
+    class Tools tools
+    class History hist
+    class Call llm
+    class Edit,Feed ed
+      </div>
+    </div>
+    <ul>
+      <li><b>Provider-specific system prompts</b> — different models get different system prompt prefixes (Codex-trained models get a Codex header, etc.); see <code>session/prompt.ts</code></li>
+      <li><b>AGENTS.md walk-up</b> — the standard AGENTS.md/CLAUDE.md hierarchical resolution, included in the system prompt</li>
+      <li><b>LSP feedback loop</b> — <code>edit.ts:104-116</code> waits for diagnostics and embeds compiler errors directly in the tool result; the model sees them on the next step without being asked</li>
+      <li><b>No embeddings</b> — retrieval is <code>ripgrep</code> + direct file reads + LSP; the philosophical bet is that compiler-grounded context beats fuzzy vector recall for code</li>
+      <li><b>Mode-switch reminders</b> — when the agent transitions between modes (plan / build), the system injects a reminder so the model knows the new tool set is active</li>
+    </ul>
+
+    <h3>10.3 · Memory management — JSON on disk + shadow git, no semantic layer</h3>
+    <p>OpenCode's memory is intentionally minimalist. Sessions are JSON files; durable knowledge is the project's <code>AGENTS.md</code> (which the agent can edit); revertable state lives in a shadow git worktree per session.</p>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TB
+    Sess["<b>session JSON</b><br/><span style='font-size:12px;color:#475569'>per-session message history<br/>tool calls + results<br/>JSON on disk (SQLite in dev branch)</span>"]
+    Comp["<b>Compacted ranges</b><br/><span style='font-size:12px;color:#475569'>old turns marked compacted<br/>filtered out of next prompt<br/>original kept for replay</span>"]
+    Agents["<b>AGENTS.md</b><br/><span style='font-size:12px;color:#475569'>walked up from cwd<br/>agent can Edit it<br/>persists across sessions</span>"]
+    Shadow["<b>Shadow git worktree</b><br/><span style='font-size:12px;color:#475569'>per-session snapshot store<br/>every edit creates a commit<br/>revert = git checkout</span>"]
+    RG["<b>ripgrep / LSP queries</b><br/><span style='font-size:12px;color:#475569'>retrieval on demand<br/>no pre-built vector index</span>"]
+    Sess --> Comp
+    Agents -. injected to system prompt .-> Sess
+    Shadow -. revert tool .-> Sess
+    RG -. queried during turn .-> Sess
+    classDef sess fill:#fef3c7,stroke:#a16207,stroke-width:2px,color:#422006
+    classDef comp fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#052e16
+    classDef agents fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#1e1b4b
+    classDef shadow fill:#fce7f3,stroke:#be185d,stroke-width:2px,color:#500724
+    classDef rg fill:#ede9fe,stroke:#6d28d9,stroke-width:2px,color:#2e1065
+    class Sess sess
+    class Comp comp
+    class Agents agents
+    class Shadow shadow
+    class RG rg
+      </div>
+    </div>
+    <ul>
+      <li><b>Session = JSON file</b> — easy to inspect, diff, version-control; SQLite migration is in progress on the dev branch</li>
+      <li><b>Compacted ranges</b> — instead of mutating history, OpenCode marks ranges as compacted and filters them on prompt build; the original is preserved for replay</li>
+      <li><b>AGENTS.md is durable memory</b> — the agent can <code>Edit</code> it directly; persists across sessions and projects</li>
+      <li><b>Shadow git</b> — every edit creates a snapshot in a side worktree, making <code>revert</code> a single git operation; no in-memory undo stack</li>
+      <li><b>No semantic memory</b> — by design. <code>ripgrep</code> + LSP do the heavy lifting; the philosophical bet is "code is structured, not vibey"</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>11 · Strengths & Tradeoffs</h2>
     <div class="cards">
       <div class="card">
         <div class="icon">💪</div>
@@ -229,7 +339,7 @@ GIT_WORK_TREE=$worktree</code></pre>
   </section>
 
   <section>
-    <h2>11 · Two OpenCodes — Mind the Lineage</h2>
+    <h2>12 · Two OpenCodes — Mind the Lineage</h2>
     <table class="matrix">
       <thead><tr><th>Repo</th><th>Language</th><th>Status</th><th>Notes</th></tr></thead>
       <tbody>
@@ -241,7 +351,7 @@ GIT_WORK_TREE=$worktree</code></pre>
   </section>
 
   <section>
-    <h2>12 · Further Reading</h2>
+    <h2>13 · Further Reading</h2>
     <ul>
       <li><a href="https://github.com/sst/opencode">sst/opencode</a></li>
       <li><a href="https://github.com/opencode-ai/opencode">opencode-ai/opencode (archived)</a></li>
