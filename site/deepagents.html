@@ -61,32 +61,21 @@ result = agent.invoke({
     <div class="diagram">
       <div class="mermaid">
 flowchart TB
-    subgraph App["create_deep_agent()"]
-        Cfg[Config & defaults]
-        Sub[Sub-agent factory]
-        MW[Middleware composer]
-    end
-    subgraph LC["LangChain create_agent()"]
-        Builder[Graph builder]
-        ToolReg[Tool registry]
-        Inject[init_chat_model]
-    end
-    subgraph LG["LangGraph runtime"]
-        SG[StateGraph]
-        Model[model_node]
-        Tool[tool_node]
-        Ckpt[Checkpointer]
-        Store[BaseStore]
-    end
-    subgraph Backend["BackendProtocol"]
-        State[StateBackend]
-        FS[FilesystemBackend]
-        Shell[LocalShellBackend]
-        Remote[Runloop / Daytona / Modal]
-    end
-    App --> LC --> LG
+    App["<b>create_deep_agent()</b><br/><span style='font-size:12px;color:#475569'>Config & defaults · Sub-agent factory<br/>Middleware composer</span>"]
+    LC["<b>LangChain create_agent()</b><br/><span style='font-size:12px;color:#475569'>Graph builder · Tool registry · init_chat_model</span>"]
+    LG["<b>LangGraph runtime</b><br/><span style='font-size:12px;color:#475569'>StateGraph · model_node · tool_node<br/>Checkpointer · BaseStore</span>"]
+    Backend["<b>BackendProtocol</b><br/><span style='font-size:12px;color:#475569'>StateBackend · FilesystemBackend · LocalShellBackend<br/>Runloop / Daytona / Modal</span>"]
+    App --> LC
+    LC --> LG
     LG -.uses.-> Backend
-    Tool -.commands.-> SG
+    classDef app fill:#fef3c7,stroke:#a16207,stroke-width:2px,color:#422006
+    classDef lc fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#052e16
+    classDef lg fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#1e1b4b
+    classDef be fill:#fce7f3,stroke:#be185d,stroke-width:2px,color:#500724
+    class App app
+    class LC lc
+    class LG lg
+    class Backend be
       </div>
     </div>
   </section>
