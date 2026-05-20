@@ -51,45 +51,25 @@
     <div class="diagram">
       <div class="mermaid">
 flowchart TB
-    subgraph Frontends["5 frontends, 1 protocol"]
-        TUI[tui — ratatui terminal UI]
-        Exec[exec — headless one-shot]
-        App[app-server — JSON-RPC for IDE/desktop]
-        McpS[mcp-server — Codex as MCP tool]
-        IDE[IDE plugin]
-    end
-    subgraph Core["core/ — agent core"]
-        Sub[submission_loop handlers.rs:733]
-        Turn[run_turn turn.rs:141]
-        Tools[ToolCallRuntime]
-        Agents[AGENTS.md manager]
-        Skills[SkillsManager]
-        Compact[3 compaction modes]
-    end
-    subgraph Tools_["Tool handlers"]
-        Shell[shell / local_shell]
-        Exec_[exec_command + write_stdin]
-        Patch[apply_patch]
-        Plan[update_plan]
-        Mcp[mcp]
-        SubAg[agent_jobs / multi_agents]
-    end
-    subgraph Sandbox["Sandbox crates"]
-        Seat[sandboxing — Seatbelt .sbpl]
-        Linux[linux-sandbox — bwrap+seccomp+Landlock]
-        Win[windows-sandbox-rs — AppContainer]
-        Exec2[execpolicy — Starlark rules]
-    end
-    subgraph Provider["Provider"]
-        Resp[OpenAI Responses API<br/>WS primary, HTTPS fallback]
-        Other[Anthropic / Ollama / Bedrock]
-    end
-    Frontends --> Sub --> Turn --> Tools --> Tools_
+    Frontends["<b>5 frontends, 1 protocol</b><br/><span style='font-size:12px;color:#475569'>tui (ratatui) · exec (headless) · app-server (JSON-RPC)<br/>mcp-server (Codex as MCP tool) · IDE plugin</span>"]
+    Core["<b>core/ — agent core</b><br/><span style='font-size:12px;color:#475569'>submission_loop handlers.rs:733 · run_turn turn.rs:141<br/>ToolCallRuntime · AGENTS.md manager · SkillsManager · 3 compaction modes</span>"]
+    Tools_["<b>Tool handlers</b><br/><span style='font-size:12px;color:#475569'>shell / local_shell · exec_command + write_stdin<br/>apply_patch · update_plan · mcp · agent_jobs / multi_agents</span>"]
+    Sandbox["<b>Sandbox crates</b><br/><span style='font-size:12px;color:#475569'>sandboxing (macOS Seatbelt .sbpl)<br/>linux-sandbox (bwrap + seccomp + Landlock)<br/>windows-sandbox-rs (AppContainer) · execpolicy (Starlark)</span>"]
+    Provider["<b>Provider</b><br/><span style='font-size:12px;color:#475569'>OpenAI Responses API (WS primary, HTTPS fallback)<br/>Anthropic · Ollama · Bedrock</span>"]
+    Frontends --> Core
+    Core --> Tools_
     Tools_ -.shell/patch.-> Sandbox
-    Turn --> Provider
-    Turn --> Agents
-    Turn --> Skills
-    Turn --> Compact
+    Core --> Provider
+    classDef fe fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#1e1b4b
+    classDef core fill:#fef3c7,stroke:#a16207,stroke-width:2px,color:#422006
+    classDef tools fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#052e16
+    classDef sb fill:#fee2e2,stroke:#b91c1c,stroke-width:2px,color:#450a0a
+    classDef prov fill:#fce7f3,stroke:#be185d,stroke-width:2px,color:#500724
+    class Frontends fe
+    class Core core
+    class Tools_ tools
+    class Sandbox sb
+    class Provider prov
       </div>
     </div>
   </section>
