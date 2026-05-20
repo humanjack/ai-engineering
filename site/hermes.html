@@ -208,7 +208,124 @@ flowchart TB
   </section>
 
   <section>
-    <h2>9 · Strengths & Tradeoffs</h2>
+    <h2>9 · Deep Dive: Harness × Context × Memory</h2>
+    <p>Hermes Agent's distinctive engineering choices show up most clearly in how it manages the harness loop, the context bytes, and the persistent memory. Here's the breakdown.</p>
+
+    <h3>9.1 · Harness engineering — one AIAgent class, five front doors, one IterationBudget</h3>
+    <p>Hermes' harness is a <b>single Python class</b>. Five different entry points (CLI, Gateway, ACP, batch, MCP server, cron) all converge on one <code>AIAgent</code> instance that owns a synchronous <code>while</code> loop. The <code>IterationBudget</code> is shared between parent and subagents so the whole job has one cap.</p>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TB
+    In["<b>Inputs</b><br/><span style='font-size:12px;color:#475569'>user msg · gateway event · cron tick<br/>ACP request · batch trajectory</span>"]
+    Pre["<b>Pre-turn</b><br/><span style='font-size:12px;color:#475569'>preflight token estimate<br/>preflight compress (up to 3 passes)<br/>plugin pre_llm_call (inject user-msg context)</span>"]
+    Loop["<b>while loop</b><br/><span style='font-size:12px;color:#475569'>api_call_count &lt; max_iterations<br/>iteration_budget.remaining &gt; 0<br/>or _budget_grace_call</span>"]
+    Dispatch["<b>Tool dispatch</b><br/><span style='font-size:12px;color:#475569'>3 paths: agent-internal · registry · MCP<br/>parallel? read-only? path-overlap?</span>"]
+    Sub["<b>delegate_task</b><br/><span style='font-size:12px;color:#475569'>spawn child AIAgent<br/>shares IterationBudget</span>"]
+    Out["<b>Final response</b>"]
+    In --> Pre --> Loop
+    Loop -- "tool_calls" --> Dispatch --> Loop
+    Loop -- "no tool_calls or budget exhausted" --> Out
+    Dispatch -. delegate .-> Sub --> Loop
+    classDef in fill:#ede9fe,stroke:#6d28d9,stroke-width:2px,color:#2e1065
+    classDef pre fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#1e1b4b
+    classDef loop fill:#fef3c7,stroke:#a16207,stroke-width:2px,color:#422006
+    classDef disp fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#052e16
+    classDef sub fill:#fce7f3,stroke:#be185d,stroke-width:2px,color:#500724
+    class In in
+    class Pre pre
+    class Loop loop
+    class Dispatch disp
+    class Sub sub
+      </div>
+    </div>
+    <ul>
+      <li><b>Five entry points, one loop</b> — every surface eventually calls <code>AIAgent.run_conversation()</code> at <code class="code-ref">run_agent.py:12094</code></li>
+      <li><b>Shared IterationBudget</b> — children inherit the parent's budget instance, so subagent work counts against the total turn budget</li>
+      <li><b>Grace call</b> — <code>or self._budget_grace_call</code> gives the model one last iteration to write a closing summary instead of being silently cut off</li>
+      <li><b>3-path dispatch</b> — agent-internal tools (todo, memory, clarify) intercept first; registry tools handle the bulk; MCP tools are routed through the registry too</li>
+      <li><b>17 lifecycle hooks</b> — fixed enum including <code>pre_llm_call</code>, <code>post_llm_call</code>, <code>pre_tool_call</code>, <code>post_tool_call</code>, <code>transform_tool_result</code>, etc.</li>
+    </ul>
+
+    <h3>9.2 · Context engineering — frozen system prompt, preflight + reactive compression</h3>
+    <p>Hermes builds its system prompt <b>once per session</b> and keeps it byte-identical across turns so provider caches stay warm. New per-turn context goes into the user message instead. Compression is two-stage: a preflight pass before the call, plus a reactive fallback on context-overflow errors.</p>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart LR
+    Build["<b>_build_system_prompt</b><br/><span style='font-size:12px;color:#475569'>SOUL.md · AGENTS.md<br/>memory snapshot · skills index</span>"]
+    Cache["<b>_cached_system_prompt</b><br/><span style='font-size:12px;color:#475569'>session-frozen<br/>persisted in state.db</span>"]
+    PreT["<b>Pre-turn injection</b><br/><span style='font-size:12px;color:#475569'>plugin context → user msg<br/>(NEVER touches system prompt)</span>"]
+    Pre["<b>Preflight check</b><br/><span style='font-size:12px;color:#475569'>estimate_request_tokens_rough<br/>vs threshold_tokens (default 75%)<br/>up to 3 compression passes</span>"]
+    React["<b>Reactive on overflow</b><br/><span style='font-size:12px;color:#475569'>4xx → ContextCompressor<br/>protect head N · tail N<br/>summarize middle</span>"]
+    LLM[(LLM API)]
+    Build --> Cache
+    Cache --> Pre
+    PreT --> Pre
+    Pre --> LLM
+    LLM -.context_overflow.-> React --> Pre
+    classDef build fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#1e1b4b
+    classDef cache fill:#fef3c7,stroke:#a16207,stroke-width:2px,color:#422006
+    classDef pre fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#052e16
+    classDef react fill:#fce7f3,stroke:#be185d,stroke-width:2px,color:#500724
+    classDef llm fill:#ede9fe,stroke:#6d28d9,stroke-width:2px,color:#2e1065
+    class Build build
+    class Cache,PreT cache
+    class Pre pre
+    class React react
+    class LLM llm
+      </div>
+    </div>
+    <ul>
+      <li><b>System prompt is frozen</b> for the whole session — built once at start, persisted in <code>state.db</code>, reused byte-for-byte across turns</li>
+      <li><b>Per-turn context</b> (plugin injections, scratchpad fragments) is appended to the <i>user message</i>, never the system prompt — so prefix caches stay valid</li>
+      <li><b>Preflight compression</b> — <code>estimate_request_tokens_rough</code> trips compression up to 3 times before calling the LLM</li>
+      <li><b>Reactive compression</b> — if the provider still returns context-overflow, <code>ContextCompressor</code> kicks in with a summary-prefix template that tells the model "treat as background reference, not active instructions"</li>
+      <li><b>Defensive XML stripping</b> — open-model leakage of <code>&lt;tool_call&gt;</code> tags inside prose is stripped at <code>run_agent.py:3706-3798</code>; wire format is JSON-only</li>
+    </ul>
+
+    <h3>9.3 · Memory management — frozen snapshot + bounded files + one external provider</h3>
+    <p>Memory in Hermes is intentionally <b>bounded and curated</b>. The system prompt sees a frozen snapshot of <code>MEMORY.md</code> / <code>USER.md</code> at session start; durable on-disk writes update files but not the prompt; an optional external provider (Honcho, Mem0, etc.) can run in parallel — but only one at a time.</p>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TB
+    Soul["<b>SOUL.md</b><br/><span style='font-size:12px;color:#475569'>persona &amp; identity</span>"]
+    Mem["<b>MEMORY.md</b><br/><span style='font-size:12px;color:#475569'>agent's curated notes<br/>character-limited</span>"]
+    User["<b>USER.md</b><br/><span style='font-size:12px;color:#475569'>what agent knows about user<br/>character-limited</span>"]
+    Snap["<b>Frozen snapshot</b><br/><span style='font-size:12px;color:#475569'>baked into system prompt<br/>at session start only</span>"]
+    Live["<b>Live state</b><br/><span style='font-size:12px;color:#475569'>memory tool returns current bytes<br/>even after mid-session edits</span>"]
+    Db["<b>SQLite state.db</b><br/><span style='font-size:12px;color:#475569'>FTS5 sessions<br/>session_search tool</span>"]
+    Ext["<b>External provider (optional, 1)</b><br/><span style='font-size:12px;color:#475569'>Honcho · Mem0 · Hindsight<br/>Supermemory · Byterover · …</span>"]
+    Soul --> Snap
+    Mem --> Snap
+    User --> Snap
+    Mem --> Live
+    User --> Live
+    Snap -. baked at next session .-> Soul
+    Db -. session_search .-> Live
+    Ext -. prefetch / sync_turn .-> Live
+    classDef id fill:#fef3c7,stroke:#a16207,stroke-width:2px,color:#422006
+    classDef m fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#052e16
+    classDef snap fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#1e1b4b
+    classDef live fill:#fce7f3,stroke:#be185d,stroke-width:2px,color:#500724
+    classDef ext fill:#ede9fe,stroke:#6d28d9,stroke-width:2px,color:#2e1065
+    class Soul id
+    class Mem,User m
+    class Snap snap
+    class Live,Db live
+    class Ext ext
+      </div>
+    </div>
+    <ul>
+      <li><b>Frozen snapshot pattern</b> — <code>tools/memory_tool.py:1-24</code> documents the contract: prompt is stable, tool response shows live state, writes are durable but visible only to next session</li>
+      <li><b>Bounded character budget</b> — <code>MEMORY.md</code> / <code>USER.md</code> are length-capped; agent must curate, not just append</li>
+      <li><b>Threat scanner</b> — memory writes are checked for invisible Unicode, exfil-via-curl, ssh-backdoor markers (<code>memory_tool.py:67-89</code>)</li>
+      <li><b>SQLite + FTS5</b> — every turn lands in <code>state.db</code> with full-text search; the agent can recall prior sessions via the <code>session_search</code> tool</li>
+      <li><b>One external provider</b> — pick a single philosophical bet (dialectic Honcho, RAG-vector Mem0, etc.); cannot mix</li>
+      <li><b>Background curator</b> — runs on the auxiliary model every 7 days; protects the main model's cache by never touching it</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>10 · Strengths & Tradeoffs</h2>
     <div class="cards">
       <div class="card">
         <div class="icon">💪</div>
@@ -234,7 +351,7 @@ flowchart TB
   </section>
 
   <section>
-    <h2>10 · Key Takeaways</h2>
+    <h2>11 · Key Takeaways</h2>
     <ol>
       <li><b>Engineering &gt; Novelty.</b> "Shipping an agent" is mostly retries, surrogates, JSON repair, dead-connection cleanup, and provider quirks.</li>
       <li><b>Cache discipline pays</b> — frozen-snapshot system prompts + user-message context injection + auxiliary-model curator.</li>
