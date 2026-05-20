@@ -230,7 +230,130 @@ flowchart LR
   </section>
 
   <section>
-    <h2>10 · Strengths & Tradeoffs</h2>
+    <h2>10 · Deep Dive: Harness × Context × Memory</h2>
+    <p>Codex CLI is built for one thing above all: keep an unsupervised LLM from doing damage. The harness, context, and memory all reflect that constraint.</p>
+
+    <h3>10.1 · Harness engineering — Op/EventMsg protocol + submission loop + per-turn loop</h3>
+    <p>Codex's harness is a Rust async runtime structured around a single <code>Op</code>/<code>EventMsg</code> protocol. Every frontend (TUI, headless exec, IDE plugin, JSON-RPC app-server, inbound MCP server) speaks the same protocol to the same core. The <code>submission_loop</code> dispatches ops to spawned <code>Task</code>s; <code>run_turn</code> handles one full LLM round-trip with compaction, hooks, and tool dispatch.</p>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TB
+    Front["<b>Frontends</b><br/><span style='font-size:12px;color:#475569'>tui · exec · app-server · mcp-server · IDE plugin</span>"]
+    Sub["<b>submission_loop</b><br/><span style='font-size:12px;color:#475569'>handlers.rs:733<br/>dispatches Submission { id, op }<br/>spawns Task per UserTurn</span>"]
+    Turn["<b>run_turn (~600 LOC)</b><br/><span style='font-size:12px;color:#475569'>turn.rs:141<br/>pre-compact · resolve skills · MCP · hooks<br/>WS primary / HTTPS fallback to Responses API</span>"]
+    Hook["<b>ClaudeHooksEngine</b><br/><span style='font-size:12px;color:#475569'>8 events: SessionStart · UserPromptSubmit<br/>PreToolUse · PostToolUse · Stop · …<br/>Stop hook can demand continuation</span>"]
+    Tool["<b>Tool handlers</b><br/><span style='font-size:12px;color:#475569'>shell · apply_patch · update_plan<br/>mcp · agent_jobs · multi_agents</span>"]
+    Sand["<b>Sandbox crates</b><br/><span style='font-size:12px;color:#475569'>OS-level isolation per platform<br/>(see §3-4)</span>"]
+    Front -->|Op| Sub --> Turn
+    Turn -. fires .-> Hook
+    Turn --> Tool
+    Tool -. shell/patch .-> Sand
+    Hook -. may pause/continue .-> Turn
+    classDef f fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#1e1b4b
+    classDef s fill:#fef3c7,stroke:#a16207,stroke-width:2px,color:#422006
+    classDef t fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#052e16
+    classDef h fill:#ede9fe,stroke:#6d28d9,stroke-width:2px,color:#2e1065
+    classDef sb fill:#fee2e2,stroke:#b91c1c,stroke-width:2px,color:#450a0a
+    classDef tl fill:#fce7f3,stroke:#be185d,stroke-width:2px,color:#500724
+    class Front f
+    class Sub s
+    class Turn t
+    class Hook h
+    class Sand sb
+    class Tool tl
+      </div>
+    </div>
+    <ul>
+      <li><b>One protocol, five frontends</b> — <code>Op</code> + <code>EventMsg</code> types in <code class="code-ref">protocol/src/protocol.rs</code> are the contract; every UI just plays them back differently</li>
+      <li><b>WS primary, HTTPS fallback</b> — Responses API connection prefers WebSockets for streaming; falls back to HTTPS if WS fails (resilience)</li>
+      <li><b>Claude-Code-compatible hooks</b> — the engine type is literally <code>ClaudeHooksEngine</code>; same 8 events, JSON-over-stdio</li>
+      <li><b>Stop hook continuation</b> — a Stop hook can return <code>continuation_fragment</code> that re-enters the loop with a new user message; lets external policy systems demand follow-up</li>
+      <li><b>Per-platform sandbox</b> — macOS Seatbelt + execpolicy, Linux bubblewrap + seccomp + Landlock, Windows AppContainer (defense in depth, not "trust the model")</li>
+    </ul>
+
+    <h3>10.2 · Context engineering — three compaction modes + skill resolution + plugin mentions</h3>
+    <p>Codex has <b>three different compaction implementations</b>. Different model families assume different initial-context structures, so the compaction strategy adapts. Skills and plugin mentions get resolved into the prompt at turn start.</p>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TB
+    Pre["<b>Pre-turn assembly</b><br/><span style='font-size:12px;color:#475569'>resolve_skills() · plugin mentions<br/>MCP tool list · AGENTS.md hierarchy<br/>per-model system prompt (gpt-5_codex_prompt.md, …)</span>"]
+    Decide{"<b>compaction mode?</b><br/><span style='font-size:12px;color:#475569'>per model · per provider</span>"}
+    Local["<b>compact.rs</b><br/><span style='font-size:12px;color:#475569'>local LLM-summarization<br/>InitialContextInjection mode</span>"]
+    Remote["<b>compact_remote.rs / v2</b><br/><span style='font-size:12px;color:#475569'>OpenAI /responses/compact endpoint<br/>BeforeLastUserMessage / DoNotInject<br/>tuned to trained-model assumptions</span>"]
+    Mid["<b>Mid-turn compaction</b><br/><span style='font-size:12px;color:#475569'>on ContextWindowExceeded<br/>run_auto_compact during the loop<br/>re-inject and continue</span>"]
+    Send[(send to Responses API)]
+    Pre --> Decide
+    Decide -- "local" --> Local --> Send
+    Decide -- "remote" --> Remote --> Send
+    Send -.overflow.-> Mid --> Decide
+    classDef p fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#1e1b4b
+    classDef d fill:#fef3c7,stroke:#a16207,stroke-width:2px,color:#422006
+    classDef l fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#052e16
+    classDef r fill:#ede9fe,stroke:#6d28d9,stroke-width:2px,color:#2e1065
+    classDef m fill:#fce7f3,stroke:#be185d,stroke-width:2px,color:#500724
+    class Pre p
+    class Decide d
+    class Local l
+    class Remote r
+    class Mid m
+    class Send p
+      </div>
+    </div>
+    <ul>
+      <li><b>Three compaction modules</b> — <code>compact.rs</code>, <code>compact_remote.rs</code>, <code>compact_remote_v2.rs</code>, each with different <code>InitialContextInjection</code> behavior (<code>BeforeLastUserMessage</code> vs <code>DoNotInject</code>)</li>
+      <li><b>Per-model system prompts</b> — <code>core/gpt_5_codex_prompt.md</code>, <code>gpt_5_1_prompt.md</code>, <code>gpt-5.2-codex_prompt.md</code>, etc. — prompt engineering co-evolves with model releases</li>
+      <li><b>Mid-turn auto-compact</b> — on <code>ContextWindowExceeded</code>, run_turn re-compacts and continues the loop transparently</li>
+      <li><b>Plugin mentions resolve at turn start</b> — <code>@filename</code> and <code>@skill-name</code> references in the user prompt are expanded inline</li>
+      <li><b>Hook injection for events</b> — <code>UserPromptSubmit</code> hook can inject additional context before the prompt reaches the model</li>
+    </ul>
+
+    <h3>10.3 · Memory management — AGENTS.md hierarchy + skills + session resume</h3>
+    <p>Codex's persistent memory is layered: hierarchical AGENTS.md files from cwd up to project root, plus bundled and user-installed skills, plus session resume from <code>.codex/sessions/</code>. Crucially, <code>.git</code>, <code>.codex</code>, and <code>AGENTS.md</code> are <b>write-masked even inside writable sandbox roots</b> — the agent can't rewrite its own rules.</p>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TB
+    Cwd["<b>cwd/AGENTS.md</b><br/><span style='font-size:12px;color:#475569'>repo-specific rules<br/>highest precedence</span>"]
+    Parent["<b>parent/AGENTS.md</b><br/><span style='font-size:12px;color:#475569'>monorepo / workspace rules</span>"]
+    Global["<b>~/.codex/AGENTS.md</b><br/><span style='font-size:12px;color:#475569'>user-global preferences</span>"]
+    Skills["<b>SkillsManager</b><br/><span style='font-size:12px;color:#475569'>bundled (include_dir!): skill-creator,<br/>plugin-creator, skill-installer,<br/>openai-docs, imagegen<br/>+ user-installed in ~/.codex/skills/</span>"]
+    Sess["<b>Session resume</b><br/><span style='font-size:12px;color:#475569'>.codex/sessions/&lt;id&gt;.jsonl<br/>full transcript · resumable</span>"]
+    Protect["<b>PROTECTED_METADATA_PATH_NAMES</b><br/><span style='font-size:12px;color:#475569'>.git · .codex · .agents · AGENTS.md<br/>read-only inside any sandbox<br/>agent CANNOT edit these</span>"]
+    System[("System prompt at turn start")]
+    Cwd --> System
+    Parent --> System
+    Global --> System
+    Skills -. metadata at start, full on use .-> System
+    Sess -. resume restores full history .-> System
+    Protect -. enforced by all 3 sandbox layers .-> Cwd
+    Protect -. " " .-> Parent
+    Protect -. " " .-> Global
+    classDef cwd fill:#fef3c7,stroke:#a16207,stroke-width:2px,color:#422006
+    classDef parent fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#052e16
+    classDef glob fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#1e1b4b
+    classDef sk fill:#ede9fe,stroke:#6d28d9,stroke-width:2px,color:#2e1065
+    classDef sess fill:#fce7f3,stroke:#be185d,stroke-width:2px,color:#500724
+    classDef prot fill:#fee2e2,stroke:#b91c1c,stroke-width:2px,color:#450a0a
+    classDef sys fill:#e0e7ff,stroke:#4338ca,stroke-width:2px,color:#1e1b4b
+    class Cwd cwd
+    class Parent parent
+    class Global glob
+    class Skills sk
+    class Sess sess
+    class Protect prot
+    class System sys
+      </div>
+    </div>
+    <ul>
+      <li><b>Hierarchical AGENTS.md</b> — walked up from cwd to project root; closer files take precedence</li>
+      <li><b>Bundled starter skills</b> — embedded into the Rust binary via <code>include_dir!</code>; <code>skill-creator</code>, <code>plugin-creator</code>, <code>skill-installer</code>, <code>openai-docs</code>, <code>imagegen</code> ship in the box</li>
+      <li><b>Protected paths</b> — <code>PROTECTED_METADATA_PATH_NAMES</code> (<code>.git</code>, <code>.codex</code>, <code>.agents</code>, <code>AGENTS.md</code>) are read-only inside every sandbox layer; the agent cannot rewrite the rules that constrain it</li>
+      <li><b>Session resume</b> — <code>.codex/sessions/&lt;id&gt;.jsonl</code> stores full transcripts; <code>codex resume &lt;id&gt;</code> restores the entire history</li>
+      <li><b>Hierarchical resolution mirrored in sandbox</b> — sandbox policy also walks the directory tree to find the right read/write masks; consistent with how memory is loaded</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>11 · Strengths & Tradeoffs</h2>
     <div class="cards">
       <div class="card">
         <div class="icon">💪</div>
@@ -259,7 +382,7 @@ flowchart LR
   </section>
 
   <section>
-    <h2>11 · Key Takeaways</h2>
+    <h2>12 · Key Takeaways</h2>
     <ol>
       <li><b>The sandbox is the lesson.</b> Three independent enforcement layers + metadata masking = strongest current take on "untrust the model".</li>
       <li><b>One protocol unlocks many frontends.</b> Every UI is just a different mouth feeding the same <code>submission_loop</code>.</li>
