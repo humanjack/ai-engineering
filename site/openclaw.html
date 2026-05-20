@@ -182,7 +182,108 @@ flowchart TD
   </section>
 
   <section>
-    <h2>8 · Strengths & Tradeoffs</h2>
+    <h2>8 · Deep Dive: Harness × Context × Memory</h2>
+    <p>OpenClaw inherits Pi's loop but builds a much larger surrounding system. Here's how the three engineering layers fit together.</p>
+
+    <h3>8.1 · Harness engineering — one Gateway, many surfaces</h3>
+    <p>OpenClaw's harness is a long-lived <b>WebSocket Gateway</b> that owns a single embedded Pi loop per session. Multiple clients (CLI, menu bar, mobile, web UI) and 22+ messaging channels all talk to that one Gateway. Concurrency is serialised through per-session <b>command lanes</b>.</p>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TB
+    Inbox["<b>Inbound events</b><br/><span style='font-size:12px;color:#475569'>messaging channels · WebSocket clients<br/>cron · webhooks · Gmail PubSub</span>"]
+    Router["<b>Gateway router</b><br/><span style='font-size:12px;color:#475569'>per-session command lane (serialised)<br/>auth profile rotation + failover<br/>internal hooks fire here</span>"]
+    PiSess["<b>Embedded Pi session</b><br/><span style='font-size:12px;color:#475569'>createAgentSession({customTools, sessionManager})<br/>plugin hooks: before_prompt_build,<br/>before_tool_call, after_compaction, …</span>"]
+    Out["<b>Outbound</b><br/><span style='font-size:12px;color:#475569'>channel-specific senders<br/>Canvas (A2UI) · TTS · file delivery</span>"]
+    Inbox --> Router --> PiSess --> Out
+    PiSess -. "hooks may rewrite / block" .-> Router
+    classDef in fill:#ede9fe,stroke:#6d28d9,stroke-width:2px,color:#2e1065
+    classDef rt fill:#fef3c7,stroke:#a16207,stroke-width:2px,color:#422006
+    classDef pi fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#052e16
+    classDef out fill:#fce7f3,stroke:#be185d,stroke-width:2px,color:#500724
+    class Inbox in
+    class Router rt
+    class PiSess pi
+    class Out out
+      </div>
+    </div>
+    <ul>
+      <li><b>Per-session lanes</b> — concurrent inbound events for the same session are serialised; different sessions run in parallel</li>
+      <li><b>Two hook layers</b> — Gateway-level <i>internal hooks</i> for system events (<code>message:received</code>, <code>session:compact:before</code>) and plugin-level <i>loop hooks</i> tied to the embedded Pi loop</li>
+      <li><b>Auth profile rotation</b> — each session can rotate between provider auth profiles with automatic failover on rate limits</li>
+      <li><b>Cron isolated agent</b> — scheduled jobs spin up isolated agent turns with elevated auto-approval and restricted toolsets</li>
+      <li><b>Canvas / A2UI</b> — a live HTML surface at <code>/__openclaw__/canvas/</code> the agent can render into mid-turn</li>
+    </ul>
+
+    <h3>8.2 · Context engineering — cache TTL is a first-class concept</h3>
+    <p>OpenClaw treats prompt caching as an <b>engineering invariant</b>, not an optimisation. A custom transcript entry type <code>openclaw.cache-ttl</code> marks TTL anchors inside the JSONL session, and pruning is cache-TTL-aware.</p>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TB
+    Build["<b>Prompt build</b><br/><span style='font-size:12px;color:#475569'>deterministic order:<br/>registries · plugins · files · tool payload</span>"]
+    Anchor["<b>cache-ttl anchors</b><br/><span style='font-size:12px;color:#475569'>openclaw.cache-ttl entries in JSONL<br/>isCacheTtlEligibleProvider() decides</span>"]
+    Prune["<b>Context pruning</b><br/><span style='font-size:12px;color:#475569'>mode = cache-ttl<br/>never break a cached prefix<br/>compaction-safeguard plugin</span>"]
+    Engine["<b>Context Engine (pluggable)</b><br/><span style='font-size:12px;color:#475569'>default = legacy<br/>3rd-party: lossless-claw, DAG engines</span>"]
+    Out[(LLM API)]
+    Build --> Anchor --> Prune --> Engine --> Out
+    classDef build fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#1e1b4b
+    classDef anc fill:#fef3c7,stroke:#a16207,stroke-width:2px,color:#422006
+    classDef prune fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#052e16
+    classDef eng fill:#ede9fe,stroke:#6d28d9,stroke-width:2px,color:#2e1065
+    classDef api fill:#fce7f3,stroke:#be185d,stroke-width:2px,color:#500724
+    class Build build
+    class Anchor anc
+    class Prune prune
+    class Engine eng
+    class Out api
+      </div>
+    </div>
+    <ul>
+      <li><b>Deterministic ordering</b> — root <code>AGENTS.md:47</code> mandates stable ordering of every prompt component to preserve provider prefix caches</li>
+      <li><b>Cache-TTL transcript entries</b> — sessions carry inline TTL markers; <code>isCacheTtlEligibleProvider()</code> decides per-provider whether to emit them</li>
+      <li><b>Per-provider compatibility</b> — Anthropic family, Kilocode-routed Anthropic, and Google/Gemini all get appropriate TTL handling</li>
+      <li><b>Compaction safeguard</b> — Pi-hooks plugin reminds the model to <i>save important notes to memory</i> before compacting</li>
+      <li><b>Context Engine SPI</b> — 3rd parties can ship lossless or DAG-based engines without forking core</li>
+    </ul>
+
+    <h3>8.3 · Memory management — markdown first, vectors optional</h3>
+    <p>OpenClaw's memory is intentionally human-readable. The canonical store is markdown files; semantic vectors are an opt-in plugin.</p>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TB
+    Mem["<b>MEMORY.md</b><br/><span style='font-size:12px;color:#475569'>top-level persistent notes<br/>edited by agent or user</span>"]
+    Daily["<b>memory/YYYY-MM-DD.md</b><br/><span style='font-size:12px;color:#475569'>daily journal · auto-rotated<br/>per-day breadcrumbs</span>"]
+    Wiki["<b>memory-wiki</b><br/><span style='font-size:12px;color:#475569'>optional plugin<br/>Obsidian-style wikilinks</span>"]
+    Vec["<b>memory-lancedb</b><br/><span style='font-size:12px;color:#475569'>optional plugin<br/>vector search over the .md files</span>"]
+    Tool[("memory_search / memory_get<br/>agent tools")]
+    Sess["<b>Session JSONL</b><br/><span style='font-size:12px;color:#475569'>~/.openclaw/agents/&lt;id&gt;/sessions/&lt;sid&gt;.jsonl<br/>episodic memory</span>"]
+    Mem --> Tool
+    Daily --> Tool
+    Wiki -. resolves links .-> Mem
+    Vec -. indexes .-> Mem
+    Sess -. compaction handoff .-> Mem
+    classDef m fill:#fef3c7,stroke:#a16207,stroke-width:2px,color:#422006
+    classDef d fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#052e16
+    classDef opt fill:#ede9fe,stroke:#6d28d9,stroke-width:2px,color:#2e1065
+    classDef tool fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#1e1b4b
+    classDef sess fill:#fce7f3,stroke:#be185d,stroke-width:2px,color:#500724
+    class Mem m
+    class Daily d
+    class Wiki,Vec opt
+    class Tool tool
+    class Sess sess
+      </div>
+    </div>
+    <ul>
+      <li><b>MEMORY.md + daily journals</b> — agent and user can read/edit these directly; no opaque blobs</li>
+      <li><b>Obsidian-compatible</b> — the <code>memory-wiki</code> plugin makes <code>[[wikilinks]]</code> work, so your memory store doubles as a personal knowledge base</li>
+      <li><b>Vector search is optional</b> — <code>memory-lancedb</code> indexes the same markdown files; you can remove it without losing memory</li>
+      <li><b>Compaction handoff</b> — before compacting, the agent is reminded to write important context to <code>MEMORY.md</code>, so durable memory survives</li>
+      <li><b>Session JSONL</b> — every turn is on disk under <code>~/.openclaw/agents/&lt;id&gt;/sessions/&lt;sid&gt;.jsonl</code>; episodic recall via session_search if needed</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>9 · Strengths & Tradeoffs</h2>
     <div class="cards">
       <div class="card">
         <div class="icon">💪</div>
@@ -209,7 +310,7 @@ flowchart TD
   </section>
 
   <section>
-    <h2>9 · Further Reading</h2>
+    <h2>10 · Further Reading</h2>
     <ul>
       <li><a href="https://github.com/openclaw/openclaw">openclaw/openclaw</a></li>
       <li><a href="https://github.com/openclaw/openclaw/blob/main/docs/pi.md">OpenClaw's own Pi integration architecture doc</a></li>
