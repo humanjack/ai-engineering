@@ -197,7 +197,120 @@ flowchart LR
   </section>
 
   <section>
-    <h2>9 · Strengths & Tradeoffs</h2>
+    <h2>9 · Deep Dive: Harness × Context × Memory</h2>
+    <p>Deep Agents is the harness whose internals are the LangGraph state machine. Here's how the three layers cooperate.</p>
+
+    <h3>9.1 · Harness engineering — middleware stack wrapping a LangGraph StateGraph</h3>
+    <p>Each middleware can hook three points: <code>before_agent</code> (once at start), <code>wrap_model_call</code> (every LLM call), and <code>wrap_tool_call</code> (every tool execution). The agent loop itself is a LangGraph <code>StateGraph</code> with two nodes — model and tool — that ping-pong until no tool calls remain.</p>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TB
+    Inv["<b>invoke({messages})</b><br/><span style='font-size:12px;color:#475569'>start by user or via task tool</span>"]
+    Before["<b>before_agent hooks</b><br/><span style='font-size:12px;color:#475569'>MemoryMiddleware loads AGENTS.md<br/>SkillsMiddleware loads SKILL.md metadata<br/>PatchToolCallsMiddleware fixes dangling tool calls</span>"]
+    Model["<b>wrap_model_call</b><br/><span style='font-size:12px;color:#475569'>SummarizationMW: compact &gt;85%<br/>AnthropicCachingMW: stable prefix blocks<br/>User middleware can inject / modify</span>"]
+    Tool["<b>wrap_tool_call</b><br/><span style='font-size:12px;color:#475569'>large result eviction → /large_tool_results/<br/>HumanInTheLoopMW: pause for approval<br/>Command(update={...}) atomically mutates state</span>"]
+    Done[(final state)]
+    Inv --> Before --> Model
+    Model -- "tool_calls?" --> Tool
+    Tool --> Model
+    Model -- "no tool calls" --> Done
+    classDef inv fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#1e1b4b
+    classDef before fill:#fef3c7,stroke:#a16207,stroke-width:2px,color:#422006
+    classDef model fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#052e16
+    classDef tool fill:#ede9fe,stroke:#6d28d9,stroke-width:2px,color:#2e1065
+    classDef done fill:#fce7f3,stroke:#be185d,stroke-width:2px,color:#500724
+    class Inv inv
+    class Before before
+    class Model model
+    class Tool tool
+    class Done done
+      </div>
+    </div>
+    <ul>
+      <li><b>Middleware stack</b> — 10 default middlewares (TodoList → Memory* → Skills* → Filesystem → SubAgent → Summarization → AnthropicCaching → PatchToolCalls → user* → HumanInTheLoop*); each registers tools and wraps calls</li>
+      <li><b>Command pattern</b> — tools return <code>Command(update={...})</code> for atomic state updates (messages, files, todos, custom state all mutate transactionally)</li>
+      <li><b>Recursion limit 1000</b> — allows deep agent loops; LangGraph would otherwise abort at 25</li>
+      <li><b>Persistence via checkpointer</b> — pass a <code>Checkpointer</code> (e.g. <code>MemorySaver</code>) and the whole state is persistable to disk / Postgres / Redis</li>
+      <li><b>Streaming free</b> — LangGraph streams events; the wrapping middleware composes around them transparently</li>
+    </ul>
+
+    <h3>9.2 · Context engineering — 5 cooperating techniques</h3>
+    <p>No single trick fixes context. Deep Agents stacks five: cached system prompt blocks, auto-summarization, tool-arg truncation, large-result eviction, and progressive skill disclosure.</p>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TB
+    Prompt["<b>1. Cached system prompt</b><br/><span style='font-size:12px;color:#475569'>Anthropic content blocks per middleware<br/>stable prefix → ~80% cost drop</span>"]
+    Sum["<b>2. Auto-summarization</b><br/><span style='font-size:12px;color:#475569'>trigger at 85% of max_input_tokens<br/>offload to /conversation_history/<br/>keep last 10%</span>"]
+    Trunc["<b>3. Tool-arg truncation</b><br/><span style='font-size:12px;color:#475569'>old write_file/edit_file args → first 20 chars + …<br/>preserves history shape, drops bytes</span>"]
+    Evict["<b>4. Large-result eviction</b><br/><span style='font-size:12px;color:#475569'>tool results &gt; 20k tokens → /large_tool_results/<br/>inline = head + tail preview<br/>agent reads paginated chunks</span>"]
+    Skill["<b>5. Progressive skill disclosure</b><br/><span style='font-size:12px;color:#475569'>only name/description/path in system prompt<br/>full SKILL.md loaded on demand</span>"]
+    Prompt --> Sum --> Trunc --> Evict --> Skill --> Out[(LLM call)]
+    classDef p fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#1e1b4b
+    classDef s fill:#fef3c7,stroke:#a16207,stroke-width:2px,color:#422006
+    classDef t fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#052e16
+    classDef e fill:#ede9fe,stroke:#6d28d9,stroke-width:2px,color:#2e1065
+    classDef sk fill:#fce7f3,stroke:#be185d,stroke-width:2px,color:#500724
+    class Prompt p
+    class Sum s
+    class Trunc t
+    class Evict e
+    class Skill sk
+    class Out p
+      </div>
+    </div>
+    <ul>
+      <li><b>Anthropic content blocks</b> — each middleware appends a content block to <code>SystemMessage.content_blocks</code>; cache-eligible prefix stays warm</li>
+      <li><b>Defensive summarization</b> — first try the normal call; if <code>ContextOverflowError</code>, fall back to summarization (two-phase pattern)</li>
+      <li><b>Sub-agent context isolation</b> — <code>task</code> tool spawns ephemeral sub-agents with empty history; the noisy work doesn't pollute the main thread</li>
+      <li><b>Provider-agnostic core</b> — caching is Anthropic-specific but all other techniques work on any tool-calling model</li>
+      <li><b>compact_conversation tool</b> — agent can manually trigger compaction when switching tasks (proactive context hygiene)</li>
+    </ul>
+
+    <h3>9.3 · Memory management — backend-routed virtual filesystem</h3>
+    <p>Memory in Deep Agents is just files. The <code>BackendProtocol</code> abstracts where files live — LangGraph state (ephemeral), local disk, LangGraph <code>BaseStore</code> (cross-session), composite (routed by path), or a remote sandbox.</p>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TB
+    Agent[("agent code")]
+    BP["<b>BackendProtocol</b><br/><span style='font-size:12px;color:#475569'>read · write · edit · ls · glob · grep<br/>+ execute (SandboxBackendProtocol)</span>"]
+    State["<b>StateBackend</b><br/><span style='font-size:12px;color:#475569'>LangGraph state (ephemeral)<br/>default · tests · stateless agents</span>"]
+    FS["<b>FilesystemBackend</b><br/><span style='font-size:12px;color:#475569'>local disk · persistent files</span>"]
+    Store["<b>StoreBackend</b><br/><span style='font-size:12px;color:#475569'>LangGraph BaseStore<br/>cross-session memory</span>"]
+    Comp["<b>CompositeBackend</b><br/><span style='font-size:12px;color:#475569'>route /memories/ → store<br/>route default → state</span>"]
+    Sandbox["<b>Sandbox backends</b><br/><span style='font-size:12px;color:#475569'>Runloop · Daytona · Modal<br/>+ execute</span>"]
+    Mem["<b>AGENTS.md memory</b><br/><span style='font-size:12px;color:#475569'>loaded into &lt;agent_memory&gt; system block<br/>agent edits via edit_file</span>"]
+    Agent --> BP
+    BP --> State
+    BP --> FS
+    BP --> Store
+    BP --> Comp
+    BP --> Sandbox
+    Comp -. routes paths .-> State
+    Comp -. routes /memories/ .-> Store
+    Mem -. read by MemoryMiddleware .-> BP
+    classDef ag fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#1e1b4b
+    classDef bp fill:#fef3c7,stroke:#a16207,stroke-width:2px,color:#422006
+    classDef be fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#052e16
+    classDef sb fill:#ede9fe,stroke:#6d28d9,stroke-width:2px,color:#2e1065
+    classDef mem fill:#fce7f3,stroke:#be185d,stroke-width:2px,color:#500724
+    class Agent ag
+    class BP bp
+    class State,FS,Store,Comp be
+    class Sandbox sb
+    class Mem mem
+      </div>
+    </div>
+    <ul>
+      <li><b>AGENTS.md is system-prompt memory</b> — <code>MemoryMiddleware</code> loads files into <code>&lt;agent_memory&gt;</code> tags at startup; the agent can <code>edit_file</code> to update them</li>
+      <li><b>StateBackend is the default</b> — fully ephemeral; pair with a checkpointer if you want it to survive across invocations</li>
+      <li><b>StoreBackend = persistent memory</b> — backed by LangGraph's <code>BaseStore</code> (in-memory, Postgres, etc.); great for cross-session knowledge</li>
+      <li><b>CompositeBackend</b> — route specific paths to specific backends, e.g. <code>/memories/</code> to Store while <code>/tmp/</code> stays in ephemeral state</li>
+      <li><b>Trust-the-LLM security</b> — there's no in-prompt safety wall; security lives at the backend / sandbox layer (Runloop, Daytona, Modal)</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>10 · Strengths & Tradeoffs</h2>
     <div class="cards">
       <div class="card">
         <div class="icon">💪</div>
@@ -224,7 +337,7 @@ flowchart LR
   </section>
 
   <section>
-    <h2>10 · Further Reading</h2>
+    <h2>11 · Further Reading</h2>
     <ul>
       <li><a href="https://github.com/langchain-ai/deepagents">langchain-ai/deepagents</a></li>
       <li><a href="https://langchain-ai.github.io/langgraph/">LangGraph docs</a></li>
