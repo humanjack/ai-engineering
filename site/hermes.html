@@ -51,39 +51,21 @@
     <div class="diagram">
       <div class="mermaid">
 flowchart TB
-    subgraph FrontDoors["Front doors"]
-        CLI[hermes CLI/TUI]
-        GW[Gateway daemon]
-        ACP[ACP server VS Code/Zed/JetBrains]
-        Batch[Batch trajectory runner]
-        MCP[MCP server inbound]
-        Cron[Cron scheduler]
-    end
-    subgraph Core["AIAgent (one Python class)"]
-        Loop[run_conversation loop]
-        Msgs[messages list<br/>OpenAI canonical]
-        Budget[IterationBudget shared w/ subagents]
-        SysPrompt[Cached system prompt]
-    end
-    subgraph Services["Services around the core"]
-        Reg[Tool Registry<br/>AST-discovered]
-        Ctx[Context Engine<br/>pluggable]
-        Mem[MemoryManager<br/>3 channels]
-        Hooks[17 plugin hooks]
-        DB[(SQLite + FTS5)]
-        Adapters[5 API adapters]
-    end
-    subgraph Providers["Wire"]
-        CC[chat_completions]
-        AM[anthropic_messages]
-        CR[codex_responses]
-        BC[bedrock_converse]
-        CAS[codex_app_server]
-    end
+    FrontDoors["<b>Front doors</b><br/><span style='font-size:12px;color:#475569'>CLI/TUI · Gateway daemon · ACP server<br/>Batch trajectory runner · MCP server · Cron</span>"]
+    Core["<b>AIAgent — one Python class</b><br/><span style='font-size:12px;color:#475569'>run_conversation loop · messages list (OpenAI canonical)<br/>IterationBudget shared with subagents · Cached system prompt</span>"]
+    Services["<b>Services</b><br/><span style='font-size:12px;color:#475569'>Tool Registry (AST-discovered) · Context Engine (pluggable)<br/>MemoryManager (3 channels) · 17 plugin hooks<br/>SQLite + FTS5 · 5 API adapters</span>"]
+    Wire["<b>Wire — 5 API modes</b><br/><span style='font-size:12px;color:#475569'>chat_completions · anthropic_messages · codex_responses<br/>bedrock_converse · codex_app_server</span>"]
     FrontDoors --> Core
     Core --> Services
-    Services --> Adapters
-    Adapters --> CC & AM & CR & BC & CAS
+    Services --> Wire
+    classDef fd fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#1e1b4b
+    classDef core fill:#fef3c7,stroke:#a16207,stroke-width:2px,color:#422006
+    classDef sv fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#052e16
+    classDef wire fill:#fce7f3,stroke:#be185d,stroke-width:2px,color:#500724
+    class FrontDoors fd
+    class Core core
+    class Services sv
+    class Wire wire
       </div>
     </div>
     <p>Load-bearing line at <code class="code-ref">run_agent.py:12541</code>:</p>
@@ -152,25 +134,20 @@ stateDiagram-v2
     <div class="diagram">
       <div class="mermaid">
 flowchart TB
-    subgraph Snap["Frozen snapshot in system prompt (cache-friendly)"]
-        SOUL[SOUL.md — persona]
-        AG[AGENTS.md — project context]
-        MEM[MEMORY.md — agent notes]
-        USR[USER.md — what agent knows about user]
-    end
-    subgraph Db["Persistent stores"]
-        DB[(SQLite state.db FTS5)]
-        Mfile[memory/ files on disk]
-        Ext[1 external provider*<br/>Honcho / Mem0 / Hindsight / Supermemory]
-    end
-    subgraph Loop["Per-turn"]
-        Live[memory tool returns live state]
-        Prefetch[provider.prefetch query]
-        Sync[provider.sync_turn after]
-    end
-    Snap -. read at session start .-> SystemPrompt
-    Loop -. read durably .-> Db
-    Db -. baked at next session .-> Snap
+    Snap["<b>Frozen snapshot in system prompt</b> (cache-friendly)<br/><span style='font-size:12px;color:#475569'>SOUL.md (persona) · AGENTS.md (project)<br/>MEMORY.md (agent notes) · USER.md (about user)</span>"]
+    Loop["<b>Per-turn</b><br/><span style='font-size:12px;color:#475569'>memory tool returns live state<br/>provider.prefetch(query) · provider.sync_turn(after)</span>"]
+    Db["<b>Persistent stores</b><br/><span style='font-size:12px;color:#475569'>SQLite state.db (FTS5) · memory/ files on disk<br/>1 external provider*: Honcho / Mem0 / Hindsight / Supermemory</span>"]
+    Snap -. "read at session start" .-> SystemPrompt[(System Prompt)]
+    Loop -. "read durably" .-> Db
+    Db -. "baked at next session" .-> Snap
+    classDef snap fill:#fef3c7,stroke:#a16207,stroke-width:2px,color:#422006
+    classDef loop fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#052e16
+    classDef db fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#1e1b4b
+    classDef sp fill:#fce7f3,stroke:#be185d,stroke-width:2px,color:#500724
+    class Snap snap
+    class Loop loop
+    class Db db
+    class SystemPrompt sp
       </div>
     </div>
     <p><b>Key invariant:</b> mid-session memory writes update files on disk durably but do <b>not</b> change the system prompt — this preserves the prefix cache. The <code>memory</code> tool's response contains the live state so the model still has read-back within the session.</p>
