@@ -121,20 +121,26 @@ ul, ol { line-height: 1.65; color: #d6dcfb; }
   display: block;
   margin: 0 auto;
 }
-/* Improve node text rendering inside diagrams */
+/* Improve node text rendering inside diagrams.
+   IMPORTANT: do NOT change font-weight here — Mermaid measures label width
+   with its default weight (400). Overriding to 500/700 widens characters
+   AFTER measurement and clips long text at the right edge of node rects. */
 .diagram .mermaid .nodeLabel,
 .diagram .mermaid .edgeLabel,
 .diagram .mermaid foreignObject p,
 .diagram .mermaid foreignObject span {
   font-family: 'Inter', system-ui, sans-serif !important;
   color: #1e1b4b !important;
-  font-weight: 500;
 }
-/* Subgraph (cluster) labels: make them legible */
+/* Subgraph (cluster) labels: legible but still width-safe. */
 .diagram .mermaid .cluster-label .nodeLabel,
 .diagram .mermaid .cluster-label foreignObject p {
-  font-weight: 700 !important;
   color: #312e81 !important;
+}
+/* Belt-and-suspenders: allow text to spill out of its rect rather than be
+   clipped at the right edge in case Mermaid's measured width is off. */
+.diagram .mermaid foreignObject {
+  overflow: visible !important;
 }
 .diagram-caption { color: var(--muted); font-size: 13px; text-align: center; margin-top: 10px; }
 

@@ -93,7 +93,14 @@ function copyToClipboard(text, el) {
   });
 }
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
   initTabs();
+  // Wait for Inter (and other custom fonts) to finish loading BEFORE Mermaid
+  // measures label widths. Otherwise Mermaid sizes node rects with the
+  // fallback font, then text re-renders wider in Inter and clips at the
+  // right edge of nodes.
+  if (document.fonts && document.fonts.ready) {
+    try { await document.fonts.ready; } catch (_) { /* ignore */ }
+  }
   initMermaid();
 });
