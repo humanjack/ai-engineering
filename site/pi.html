@@ -205,7 +205,110 @@ graph TD
   </section>
 
   <section>
-    <h2>8 · Strengths & Tradeoffs</h2>
+    <h2>8 · Deep Dive: Harness × Context × Memory</h2>
+    <p>The three engineering disciplines that decide whether an agent feels solid or flaky. Here is Pi's stack for each:</p>
+
+    <h3>8.1 · Harness engineering — event-driven, steerable, hot-reloadable</h3>
+    <p>Pi's harness is unusually small but does three things well: it emits a typed event stream, lets the user <b>steer</b> mid-tool-call, and supports <b>hot-reloading extensions</b> so the agent can rewrite its own tools without restarting.</p>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart LR
+    A["<b>Input</b><br/><span style='font-size:12px;color:#475569'>user msg / steer / queued follow-up</span>"]
+    B["<b>agentLoop</b><br/><span style='font-size:12px;color:#475569'>runLoop · streamSimple<br/>convertToLlm boundary</span>"]
+    C{"tool_calls<br/>present?"}
+    D["<b>Tool dispatcher</b><br/><span style='font-size:12px;color:#475569'>sequential / parallel by tool.kind</span>"]
+    E["<b>Event sink</b><br/><span style='font-size:12px;color:#475569'>agent_start · turn_start · message_*<br/>tool_execution_* · turn_end · agent_end</span>"]
+    F[(end)]
+    A --> B --> E
+    B --> C
+    C -- yes --> D --> B
+    C -- no --> F
+    D -. emits .-> E
+    E -. "steer / follow-up" .-> A
+    classDef in fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#1e1b4b
+    classDef loop fill:#fef3c7,stroke:#a16207,stroke-width:2px,color:#422006
+    classDef tool fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#052e16
+    classDef ev fill:#fce7f3,stroke:#be185d,stroke-width:2px,color:#500724
+    class A in
+    class B,C loop
+    class D tool
+    class E ev
+      </div>
+    </div>
+    <ul>
+      <li><b>One typed event stream</b> — every UI surface (TUI, Slack bot, web UI, OpenClaw) consumes the same <code>AgentEvent</code> enum from <code class="code-ref">packages/agent/src/agent-loop.ts</code></li>
+      <li><b>Steering</b> — mid-tool-call interrupt that skips remaining tool calls and re-prompts the assistant with new instructions</li>
+      <li><b>Follow-up queue</b> — stack messages to run after the current turn finishes, without losing focus on the current task</li>
+      <li><b>Hot-reload</b> — extensions are TS modules; edit-and-save reloads them in-place. The agent can write its own extension, save, then call it next turn</li>
+      <li><b>Custom message types</b> — extensions can inject non-LLM messages (UI-only, metadata) that <code>convertToLlm()</code> filters out before the API call</li>
+    </ul>
+
+    <h3>8.2 · Context engineering — portable across providers, tree-shaped on disk</h3>
+    <p>Pi's <code>Context</code> is a serializable bundle that can be transferred between providers mid-session. Combined with the tree-shaped JSONL session, this gives Pi an unusually flexible context model.</p>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TB
+    Sys["<b>System prompt</b><br/><span style='font-size:12px;color:#475569'>shortest in the industry<br/>+ AGENTS.md walk-up<br/>+ active skill metadata</span>"]
+    Hist["<b>AgentMessage tree</b><br/><span style='font-size:12px;color:#475569'>JSONL with id + parentId<br/>side-quest branches isolated<br/>full history preserved</span>"]
+    Trans["<b>transformContext()</b><br/><span style='font-size:12px;color:#475569'>compaction · custom-type filter<br/>token budgeting</span>"]
+    Conv["<b>convertToLlm()</b><br/><span style='font-size:12px;color:#475569'>filter custom types<br/>provider-specific shape</span>"]
+    Out[(Provider API)]
+    Sys --> Trans
+    Hist --> Trans --> Conv --> Out
+    classDef sys fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#1e1b4b
+    classDef hist fill:#fef3c7,stroke:#a16207,stroke-width:2px,color:#422006
+    classDef pipe fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#052e16
+    classDef out fill:#fce7f3,stroke:#be185d,stroke-width:2px,color:#500724
+    class Sys sys
+    class Hist hist
+    class Trans,Conv pipe
+    class Out out
+      </div>
+    </div>
+    <ul>
+      <li><b>Provider-agnostic <code>Context</code></b> — <code>{ systemPrompt, messages[], tools[] }</code> is serializable; a session built on Claude can resume on GPT-5 or Gemini with no state loss</li>
+      <li><b>Side-quest branches</b> — <code>/review</code> spawns a child branch, does its work, summarizes back, then rewinds — the main thread never sees the noise</li>
+      <li><b>Auto-compaction</b> — when context approaches the limit, old turns get summarized into a single AgentMessage, but the full original JSONL is preserved for <code>/tree</code> retrieval</li>
+      <li><b>Token + cost tracking</b> in <code>pi-ai</code> means context decisions can be cost-aware, not just length-aware</li>
+    </ul>
+
+    <h3>8.3 · Memory management — file-based, walked up the tree</h3>
+    <p>Pi doesn't ship a vector DB. Memory is plain markdown files that the agent reads on session start and can edit during the session via the standard <code>Write</code> / <code>Edit</code> tools.</p>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TB
+    Cwd["<b>cwd</b><br/><span style='font-size:12px;color:#475569'>./AGENTS.md or ./CLAUDE.md<br/>project-specific rules</span>"]
+    Parent["<b>parent dirs</b><br/><span style='font-size:12px;color:#475569'>walk up to find more AGENTS.md<br/>monorepo / parent project rules</span>"]
+    Global["<b>~/.pi/AGENTS.md</b><br/><span style='font-size:12px;color:#475569'>global preferences · always loaded</span>"]
+    Sess["<b>Session JSONL</b><br/><span style='font-size:12px;color:#475569'>~/.pi/sessions/&lt;id&gt;.jsonl<br/>full message tree · branchable</span>"]
+    Sys[("System prompt at start")]
+    Cwd --> Sys
+    Parent --> Sys
+    Global --> Sys
+    Sess -. "/tree, /fork retrieve" .-> Sys
+    classDef close fill:#fef3c7,stroke:#a16207,stroke-width:2px,color:#422006
+    classDef far fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#052e16
+    classDef glob fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#1e1b4b
+    classDef sess fill:#fce7f3,stroke:#be185d,stroke-width:2px,color:#500724
+    classDef sys fill:#ede9fe,stroke:#6d28d9,stroke-width:2px,color:#2e1065
+    class Cwd close
+    class Parent far
+    class Global glob
+    class Sess sess
+    class Sys sys
+      </div>
+    </div>
+    <ul>
+      <li><b>Walk-up resolution</b> — Pi starts at <code>cwd</code> and walks up the filesystem looking for <code>AGENTS.md</code> / <code>CLAUDE.md</code>; closer files override farther ones</li>
+      <li><b>Global fallback</b> — <code>~/.pi/AGENTS.md</code> is appended last, so cross-project preferences (style guides, default models, etc.) stay sticky</li>
+      <li><b>Self-editing memory</b> — the agent can <code>Edit</code> any AGENTS.md file directly; the change is visible to the next session</li>
+      <li><b>Session JSONL = episodic memory</b> — the full message tree is on disk; <code>/tree</code> and <code>/fork</code> let the agent recall and re-enter any past branch</li>
+      <li><b>No vector store</b> — by design. If you want semantic recall, build it as an extension or skill that calls out via <code>Bash</code></li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>9 · Strengths & Tradeoffs</h2>
     <div class="cards">
       <div class="card">
         <div class="icon">🧬</div>
@@ -231,7 +334,7 @@ graph TD
   </section>
 
   <section>
-    <h2>9 · When to Choose Pi</h2>
+    <h2>10 · When to Choose Pi</h2>
     <ul>
       <li>You want to <b>own</b> your agent's behavior end-to-end</li>
       <li>You're comfortable in TypeScript and prefer an extension API to a plugin marketplace</li>
@@ -242,7 +345,7 @@ graph TD
   </section>
 
   <section>
-    <h2>10 · Further Reading</h2>
+    <h2>11 · Further Reading</h2>
     <ul>
       <li><a href="https://lucumr.pocoo.org/2026/1/31/pi/">Pi blog post — Armin Ronacher</a></li>
       <li><a href="https://github.com/badlogic/pi-mono">pi-mono on GitHub</a></li>
