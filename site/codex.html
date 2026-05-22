@@ -353,7 +353,71 @@ flowchart TB
   </section>
 
   <section>
-    <h2>11 · Strengths & Tradeoffs</h2>
+    <h2>11 · LLM Integration — Pure Rust, WebSocket-Primary Responses API</h2>
+    <p>Codex is the only agent in this series that uses <b>no LLM library at all</b>. It talks to providers via raw <code>reqwest</code> for HTTPS and <code>tokio-tungstenite</code> for WebSockets, with the OpenAI Responses API as its native protocol and bespoke adapters for everything else.</p>
+
+    <h3>11.1 · The Stack</h3>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TB
+    Core["<b>ModelClient (session-lived)</b><br/><span style='font-size:12px;color:#475569'>core/src/client.rs<br/>holds auth · provider selection · conversation id<br/>transport fallback state</span>"]
+    Sess["<b>ModelClientSession (per-turn)</b><br/><span style='font-size:12px;color:#475569'>caches WS connection · stores x-codex-turn-state<br/>WS prewarm w/ generate=false</span>"]
+    WSC["<b>ResponsesWebsocketClient</b><br/><span style='font-size:12px;color:#475569'>tokio-tungstenite<br/>response.create over WS<br/>reuses previous_response_id</span>"]
+    HC["<b>ResponsesClient (HTTPS fallback)</b><br/><span style='font-size:12px;color:#475569'>reqwest + eventsource-stream<br/>kicks in if WS fails</span>"]
+    Adapters["<b>Provider adapters</b><br/><span style='font-size:12px;color:#475569'>Responses API (native) · Chat Completions (OpenAI legacy)<br/>Anthropic · Ollama · Bedrock<br/>codex-api crate encapsulates all variants</span>"]
+    Wire[(Provider API)]
+    Core --> Sess
+    Sess --> WSC
+    Sess -. fallback .-> HC
+    WSC & HC --> Adapters --> Wire
+    classDef c fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#1e1b4b
+    classDef s fill:#fef3c7,stroke:#a16207,stroke-width:2px,color:#422006
+    classDef ws fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#052e16
+    classDef hc fill:#ede9fe,stroke:#6d28d9,stroke-width:2px,color:#2e1065
+    classDef ad fill:#fce7f3,stroke:#be185d,stroke-width:2px,color:#500724
+    classDef w fill:#fee2e2,stroke:#b91c1c,stroke-width:2px,color:#450a0a
+    class Core c
+    class Sess s
+    class WSC ws
+    class HC hc
+    class Adapters ad
+    class Wire w
+      </div>
+    </div>
+
+    <h3>11.2 · Specialties</h3>
+    <ul>
+      <li><b>No LLM library, no LangChain, no LiteLLM, no Vercel-AI-SDK equivalent.</b> <code>reqwest</code> 0.12 + <code>tokio-tungstenite</code> + <code>eventsource-stream</code> are the only HTTP/WS primitives</li>
+      <li><b>Responses API is the native protocol.</b> Codex was built around OpenAI's newer Responses API (not Chat Completions). The internal message shape is <code>ResponseItem</code> from <code>codex_protocol::models</code> — a direct mirror of the Responses API schema</li>
+      <li><b>WebSocket primary, HTTPS fallback.</b> Streaming responses use a persistent WS connection per turn; if the WS handshake fails, retry/fallback logic switches to HTTPS for the same turn. See <code>ModelClientSession</code> docs in <code>core/src/client.rs</code></li>
+      <li><b>WS prewarm with <code>generate=false</code>.</b> Before the first stream request of a turn, Codex sends a <code>response.create</code> with <code>generate=false</code> to <i>open</i> the WebSocket and grab the <code>previous_response_id</code>. The next request reuses that connection + ID for sticky routing</li>
+      <li><b><code>x-codex-turn-state</code> token.</b> Provider-side sticky routing token; cached per turn in <code>ModelClientSession</code>. Subsequent requests in the same turn land on the same backend</li>
+      <li><b>Per-model prompt files.</b> <code>core/gpt_5_codex_prompt.md</code>, <code>gpt_5_1_prompt.md</code>, <code>gpt_5_2_prompt.md</code>, <code>gpt-5.1-codex-max_prompt.md</code>, <code>gpt-5.2-codex_prompt.md</code> — each model gets its own carefully-tuned system prompt; selection is based on the resolved <code>ModelInfo</code></li>
+      <li><b>Compaction has dedicated endpoint clients.</b> <code>CompactClient</code> (calls OpenAI's <code>/responses/compact</code>) and <code>MemoriesClient</code> for memory summarisation — separate from the chat endpoint</li>
+      <li><b>Realtime API too.</b> <code>RealtimeCallClient</code> + <code>RealtimeSessionConfig</code> for voice/realtime use cases — same auth, same transport layer</li>
+      <li><b>Tools-as-Rust-types.</b> <code>create_tools_json_for_responses_api</code> in <code>codex-tools</code> builds the Responses API tool schemas at compile time from the type definitions in <code>codex_protocol</code></li>
+    </ul>
+
+    <h3>11.3 · The Per-Turn Connection Dance</h3>
+<pre><code>// codex-rs/core/src/client.rs (paraphrased from doc-comment + code)
+// ModelClient lives for the session. Per-turn:
+//
+//   1. open ModelClientSession
+//   2. WS prewarm:  response.create { generate: false } over WebSocket
+//      → returns previous_response_id, x-codex-turn-state
+//   3. real request: response.create { generate: true, previous_response_id }
+//      → streams events over the SAME WS connection
+//   4. if WS handshake fails at any step:
+//      → fall back to HTTPS + SSE for this turn
+//
+// Trade-off: prewarm = one extra round-trip per turn,
+//             but saves latency on every subsequent request in the turn
+//             AND lets the load balancer keep all turn requests on one backend.</code></pre>
+    <p>Net effect: Codex pays in surface area (every adapter is hand-written Rust) and gets fine-grained transport control no library exposes — connection reuse, sticky routing, prewarm, and WS-vs-HTTPS choice all live inside the agent.</p>
+  </section>
+
+  <section>
+    <h2>12 · Strengths & Tradeoffs</h2>
     <div class="cards">
       <div class="card">
         <div class="icon">💪</div>
@@ -382,7 +446,7 @@ flowchart TB
   </section>
 
   <section>
-    <h2>12 · Key Takeaways</h2>
+    <h2>13 · Key Takeaways</h2>
     <ol>
       <li><b>The sandbox is the lesson.</b> Three independent enforcement layers + metadata masking = strongest current take on "untrust the model".</li>
       <li><b>One protocol unlocks many frontends.</b> Every UI is just a different mouth feeding the same <code>submission_loop</code>.</li>
