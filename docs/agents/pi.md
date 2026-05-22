@@ -310,7 +310,69 @@ OpenClaw adds channel routing, heartbeats, cron, multi-session memory, sub-agent
 
 ---
 
-## 11. Key Takeaways for AI Engineers
+## 11. Deep Dive — Tool Use
+
+### 11.1 · Tool shape: TypeBox is the schema, no translation layer
+
+Pi defines tools via `AgentTool<TParameters>` ([packages/agent/src/types.ts:361](https://github.com/badlogic/pi-mono/blob/main/packages/agent/src/types.ts#L361)) which extends the base `Tool` from `pi-ai` ([packages/ai/src/types.ts:327](https://github.com/badlogic/pi-mono/blob/main/packages/ai/src/types.ts#L327)). The `parameters` field is a **TypeBox** `TSchema` — TypeBox already emits JSON Schema, so providers receive it verbatim:
+
+- OpenAI Responses: `parameters: tool.parameters as any` ([openai-responses-shared.ts:274](https://github.com/badlogic/pi-mono/blob/main/packages/ai/src/providers/openai-responses-shared.ts#L274))
+- Anthropic: same passthrough ([anthropic.ts](https://github.com/badlogic/pi-mono/blob/main/packages/ai/src/providers/anthropic.ts))
+- Google: `sanitizeForOpenApi()` only for the OpenAPI dialect ([google-shared.ts](https://github.com/badlogic/pi-mono/blob/main/packages/ai/src/providers/google-shared.ts))
+
+Argument validation runs through TypeBox's `Compile()` + `Value.Convert()` at [validation.ts:292](https://github.com/badlogic/pi-mono/blob/main/packages/ai/src/utils/validation.ts#L292), giving cheap runtime coercion of strings → numbers, etc.
+
+### 11.2 · Dispatch: tiny loop, default-parallel
+
+`executeToolCalls()` at [agent-loop.ts:373](https://github.com/badlogic/pi-mono/blob/main/packages/agent/src/agent-loop.ts#L373) is the entire dispatch surface. Per turn: stream assistant ([:275](https://github.com/badlogic/pi-mono/blob/main/packages/agent/src/agent-loop.ts#L275)) → filter `toolCall` content ([:203](https://github.com/badlogic/pi-mono/blob/main/packages/agent/src/agent-loop.ts#L203)) → batch dispatch ([:208](https://github.com/badlogic/pi-mono/blob/main/packages/agent/src/agent-loop.ts#L208)) → append `ToolResultMessage[]` ([:212](https://github.com/badlogic/pi-mono/blob/main/packages/agent/src/agent-loop.ts#L212)) → loop unless `terminate === true` ([:544](https://github.com/badlogic/pi-mono/blob/main/packages/agent/src/agent-loop.ts#L544)).
+
+Default mode is **parallel** ([types.ts:252](https://github.com/badlogic/pi-mono/blob/main/packages/agent/src/types.ts#L252)): `Promise.all()` fans out, results are reassembled in source order ([:502](https://github.com/badlogic/pi-mono/blob/main/packages/agent/src/agent-loop.ts#L502)). Any single tool marked `executionMode: "sequential"` ([types.ts:382](https://github.com/badlogic/pi-mono/blob/main/packages/agent/src/types.ts#L382)) flips the whole batch to serial execution.
+
+### 11.3 · Permissions live outside the core
+
+The core agent has **no built-in approval gate** — all registered tools run. Policy is layered in by the application via the `beforeToolCall()` callback ([types.ts:262](https://github.com/badlogic/pi-mono/blob/main/packages/agent/src/types.ts#L262), called at [agent-loop.ts:581](https://github.com/badlogic/pi-mono/blob/main/packages/agent/src/agent-loop.ts#L581)). Returning `{ block: true, reason }` aborts the call. The coding-agent TUI uses this hook to surface approval dialogs; OpenClaw uses it to wire per-channel policies.
+
+### 11.4 · Bash, Read, Edit specifics
+
+| Tool | Schema | Output policy |
+|---|---|---|
+| `bash` | `{command, timeout?}` ([bash.ts:23](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/src/core/tools/bash.ts#L23)) | Streams via `onData` ([:298](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/src/core/tools/bash.ts#L298)) at 100 ms throttle ([:155](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/src/core/tools/bash.ts#L155)). Truncates to last 2000 lines / 50 KB; full output spilled to a temp file |
+| `read` | `{path, offset?, limit?}` ([read.ts:20](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/src/core/tools/read.ts#L20)) | Same 2000-line / 50 KB cap ([truncate.ts:11-12](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/src/core/tools/truncate.ts#L11-L12)) |
+| `edit` | `{path, edits: [{oldText, newText}…]}` ([edit.ts:43](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/src/core/tools/edit.ts#L43)) | All edits matched against the original file (not incrementally); generates unified patch + display diff |
+
+The core loop itself does **not** truncate tool results — only the tools do. Apps that need turn-level pruning use the `transformContext()` hook ([types.ts:186](https://github.com/badlogic/pi-mono/blob/main/packages/agent/src/types.ts#L186)).
+
+### 11.5 · Steering does not interrupt in-flight tools
+
+`getSteeringMessages()` ([types.ts:230](https://github.com/badlogic/pi-mono/blob/main/packages/agent/src/types.ts#L230)) is called **after** the current batch finishes ([agent-loop.ts:253](https://github.com/badlogic/pi-mono/blob/main/packages/agent/src/agent-loop.ts#L253)). Real interruption flows through the `AbortSignal` threaded into every `execute()` — `bash` honors it via `waitForChildProcess()` ([bash.ts:98](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/src/core/tools/bash.ts#L98)).
+
+### 11.6 · MCP is not in the core
+
+Pi-mono ships no MCP client in the core agent or default tool set. An extension wires MCP by fetching the server catalog and calling `pi.registerTool()` per remote tool ([extensions/types.ts:1133](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/src/core/extensions/types.ts#L1133)). OpenClaw embeds this layer separately (see [openclaw.md](openclaw.md)).
+
+### 11.7 · Three streaming events per call
+
+`tool_execution_start` → `tool_execution_update` (when the tool calls `onUpdate(partial)`) → `tool_execution_end` ([types.ts:416-418](https://github.com/badlogic/pi-mono/blob/main/packages/agent/src/types.ts#L416-L418), emitted at [agent-loop.ts:408](https://github.com/badlogic/pi-mono/blob/main/packages/agent/src/agent-loop.ts#L408), [:640](https://github.com/badlogic/pi-mono/blob/main/packages/agent/src/agent-loop.ts#L640), [:494](https://github.com/badlogic/pi-mono/blob/main/packages/agent/src/agent-loop.ts#L494)). The TUI and extensions subscribe to these to render per-tool UI.
+
+```mermaid
+flowchart LR
+    A[Assistant stream] --> B[Filter type=toolCall]
+    B --> C{any sequential?}
+    C -- yes --> S[For each: prepare → execute → result]
+    C -- no  --> P[Promise.all of executes]
+    S --> R[ToolResultMessages]
+    P --> R
+    R --> H[beforeToolCall hook<br/>extension point]
+    H --> L{terminate?}
+    L -- no --> A
+    L -- yes --> X[End turn]
+```
+
+The whole thing is ~150 lines of TS. Everything else — approval UI, MCP, sub-agents, plan mode — lives in extensions that hook into this loop.
+
+---
+
+## 12. Key Takeaways for AI Engineers
 
 1. **You don't need 30 tools.** Read/Write/Edit/Bash + extension API covers nearly every coding task.
 2. **Tree-shaped sessions** are a UX primitive worth stealing.

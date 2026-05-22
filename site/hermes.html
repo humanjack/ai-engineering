@@ -325,6 +325,102 @@ flowchart TB
   </section>
 
   <section>
+    <h2>Deep Dive II · Tool Use</h2>
+    <p>Hermes runs the most maximalist tool system in the series: 80+ tools, three API surfaces, seven terminal backends, all unified through one central registry and one dispatcher. The trick is <b>AST-based auto-discovery</b> — any <code>.py</code> file in <code>tools/</code> that calls <code>registry.register()</code> at module level is loaded; no manifest, no decorator, no plugin.json.</p>
+
+    <h3>D2.1 · Registry + AST discovery</h3>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TB
+    Dir["<b>tools/*.py</b><br/><span style='font-size:12px;color:#475569'>~80 files — file ops, terminal, web,<br/>browser, vision, skills, memory, MCP, …</span>"]
+    AST["<b>_module_registers_tools (AST walk)</b><br/><span style='font-size:12px;color:#475569'>tools/registry.py:42-74<br/>parse, look for top-level<br/>registry.register() calls<br/>(no import yet)</span>"]
+    Import["importlib.import_module<br/><span style='font-size:12px;color:#475569'>fires registration as a side effect</span>"]
+    Reg["<b>ToolRegistry singleton</b><br/><span style='font-size:12px;color:#475569'>tools/registry.py:151-449<br/>{name → ToolEntry}<br/>per-toolset check_fn</span>"]
+    Dispatch["<b>registry.dispatch(name, args, **kw)</b><br/><span style='font-size:12px;color:#475569'>:390-416<br/>sync/async bridge via _run_async()<br/>exceptions → JSON {error}</span>"]
+    Dir --> AST --> Import --> Reg --> Dispatch
+    classDef d fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#1e1b4b
+    classDef a fill:#fef3c7,stroke:#a16207,stroke-width:2px,color:#422006
+    classDef i fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#052e16
+    classDef r fill:#ede9fe,stroke:#6d28d9,stroke-width:2px,color:#2e1065
+    classDef di fill:#fce7f3,stroke:#be185d,stroke-width:2px,color:#500724
+    class Dir d
+    class AST a
+    class Import i
+    class Reg r
+    class Dispatch di
+      </div>
+    </div>
+    <ul>
+      <li><b>Plain-dict schemas</b> — not Pydantic, not dataclass. <code>ToolEntry</code> wraps <code>{name, toolset, schema, handler, check_fn, max_result_size_chars, …}</code></li>
+      <li><b>AST pre-check matters</b> — importing every <code>.py</code> just to register would bloat the registry; the AST walk only imports files that actually self-register</li>
+      <li><b>Single source of truth</b> — same JSON schema serialized 3 ways: <code>chat_completions</code> (OpenAI), <code>anthropic_messages</code>, <code>codex_responses</code> (xAI legacy). Per-mode adapters in <code>agent/codex_responses_adapter.py</code> wrap, but the schema is identical</li>
+      <li><b>Dynamic schema overrides</b> — <code>delegate_task</code> mutates its own description at <code>get_definitions()</code> time to reflect current <code>max_concurrent_children</code></li>
+    </ul>
+
+    <h3>D2.2 · Sandboxing across 7 backends + 3-layer result defense</h3>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TB
+    Tool["<b>terminal tool call</b>"]
+    Env{"<b>TERMINAL_ENV</b>"}
+    L1["local"]
+    L2["docker"]
+    L3["ssh"]
+    L4["singularity"]
+    L5["modal"]
+    L6["daytona"]
+    L7["vercel_sandbox"]
+    Hermes["<b>Hermes enforces (regardless of backend)</b><br/><span style='font-size:12px;color:#475569'>path_security.py · device blocklist<br/>approval.py dangerous-cmd patterns</span>"]
+    Result["Result"]
+    Cap{"<b>size &gt; max_result_size_chars?</b>"}
+    Spill["<b>Spill to /tmp/hermes-results/{id}.txt</b><br/><span style='font-size:12px;color:#475569'>model gets (preview, has_more=True, path)</span>"]
+    Inline["Inline"]
+    TurnCap{"<b>turn total &gt; 200 KB?</b><br/><span style='font-size:12px;color:#475569'>MAX_TURN_BUDGET_CHARS</span>"}
+    Spill2["Spill largest non-persisted"]
+    Model["Model"]
+    Tool --> Hermes --> Env
+    Env --> L1 & L2 & L3 & L4 & L5 & L6 & L7 --> Result
+    Result --> Cap
+    Cap -- "yes" --> Spill
+    Cap -- "no" --> Inline
+    Spill --> TurnCap
+    Inline --> TurnCap
+    TurnCap -- "yes" --> Spill2 --> Model
+    TurnCap -- "no" --> Model
+    classDef t fill:#fef3c7,stroke:#a16207,stroke-width:2px,color:#422006
+    classDef e fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#1e1b4b
+    classDef h fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#052e16
+    classDef r fill:#ede9fe,stroke:#6d28d9,stroke-width:2px,color:#2e1065
+    classDef c fill:#fce7f3,stroke:#be185d,stroke-width:2px,color:#500724
+    classDef s fill:#fee2e2,stroke:#b91c1c,stroke-width:2px,color:#450a0a
+    class Tool t
+    class Env e
+    class L1 h
+    class L2 h
+    class L3 h
+    class L4 h
+    class L5 h
+    class L6 h
+    class L7 h
+    class Hermes r
+    class Result r
+    class Cap c
+    class Spill s
+    class TurnCap c
+    class Spill2 s
+    class Model r
+      </div>
+    </div>
+    <ul>
+      <li><b>Hermes itself enforces</b> path scoping, device blocklist, and dangerous-command approval; <b>backend</b> handles process / network / filesystem isolation</li>
+      <li><b>Three-layer result defense</b> — per-tool cap → per-result spill to <code>/tmp/hermes-results/{id}.txt</code> → per-turn 200 KB aggregate budget; preview cut at the last newline in the window so it never breaks mid-line</li>
+      <li><b><code>delegate_task</code> sub-agents</b> share an <code>IterationBudget</code> with the parent; blocked tool list (no <code>delegate_task</code> recursion, no <code>memory</code> writes, no <code>send_message</code>); depth/concurrency caps</li>
+      <li><b>MCP both ways</b> — <code>tools/mcp_tool.py:MCPServerTask</code> polls servers and registers their tools under <code>toolset="mcp-{server}"</code>; <code>mcp_serve.py</code> exposes Hermes itself as an MCP server</li>
+      <li><b>Frozen system prompt</b> — tool handlers never mutate it; <code>TodoStore</code> re-injects post-compression into <b>message history</b>, preserving prompt-cache windows</li>
+    </ul>
+  </section>
+
+  <section>
     <h2>10 · LLM Integration — Five Adapters, No Meta-SDK</h2>
     <p>Hermes is one of the most LLM-portable harnesses in public source. It does <b>not</b> use LangChain, LiteLLM, or any meta-SDK — it wraps the official Python SDKs (<code>openai</code>, <code>anthropic</code>) directly behind <b>five hand-written adapter modules</b>, dispatched by an <code>api_mode</code> resolution chain.</p>
 

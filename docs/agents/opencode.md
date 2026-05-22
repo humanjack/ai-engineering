@@ -286,7 +286,160 @@ Each prompt encodes the same intent but with provider-specific cues.
 
 ---
 
-## 14. Key Takeaways
+## 14. Deep Dive — Tool Use
+
+OpenCode's tool stack is the most production-engineered in the series. Three things make it distinctive: **Effect-based schemas** (not bare Zod), **tree-sitter bash AST** for permissions, and **LSP diagnostics embedded into tool results**.
+
+### 14.1 · Effect Schema, not Zod
+
+The tool type ([packages/opencode/src/tool/tool.ts:53-63](https://github.com/sst/opencode/blob/dev/packages/opencode/src/tool/tool.ts#L53)):
+
+```typescript
+export interface Def<Parameters extends Schema.Decoder<unknown> = ...> {
+  id: string
+  description: string
+  parameters: Parameters                    // Effect Schema
+  jsonSchema?: JSONSchema7
+  execute(args: ..., ctx: Context): Effect.Effect<ExecuteResult<M>>
+  formatValidationError?(error: unknown): string
+}
+```
+
+Effect Schema gives composable, type-safe validation; JSON Schema is generated on demand per-provider in `ProviderTransform.schema()` ([session/tools.ts:75-116](https://github.com/sst/opencode/blob/dev/packages/opencode/src/session/tools.ts#L75)). The provider transform is the only place schemas diverge from canonical form.
+
+`Tool.define()` ([:149-180](https://github.com/sst/opencode/blob/dev/packages/opencode/src/tool/tool.ts#L149)) compiles the validation closure once at init time and wires span tracing + output truncation around every call.
+
+### 14.2 · The execution context is rich
+
+Every `execute()` gets a `Context` ([:34-51](https://github.com/sst/opencode/blob/dev/packages/opencode/src/tool/tool.ts#L34)) with:
+
+- `sessionID`, `messageID`, `callID` — for snapshots and event correlation
+- `abort: AbortSignal` — cooperative cancellation
+- `metadata(input)` — partial result streaming back to the client
+- `ask(input)` — **inline permission prompt** that suspends execution until the user decides
+- `extra` — including `promptOps` (used by `task` to recurse into the prompt loop) and `bypassAgentCheck`
+
+This is the cleanest "tool context" abstraction in the six agents — everything a tool needs comes through `ctx`, not through global imports.
+
+### 14.3 · Registry: built-ins + plugins + disk scans
+
+`registry.ts` ([:141-276](https://github.com/sst/opencode/blob/dev/packages/opencode/src/tool/registry.ts#L141)) builds three sources:
+
+```typescript
+type State = {
+  custom: Tool.Def[]    // {tool,tools}/*.{js,ts} in config dirs + plugin defs
+  builtin: Tool.Def[]   // 11+ tools initialized at startup
+  task: TaskDef
+  read: ReadDef
+}
+```
+
+Per-call filtering ([:322-367](https://github.com/sst/opencode/blob/dev/packages/opencode/src/tool/registry.ts#L322)) decides which tools exist for which model — e.g., GPT-family models get `apply_patch` while everyone else gets `edit`:
+
+```typescript
+const usePatch = input.modelID.includes("gpt-") && ...
+if (tool.id === ApplyPatchTool.id) return usePatch
+if (tool.id === EditTool.id)       return !usePatch
+```
+
+That's how a single tool registry serves divergent model conventions without forking.
+
+### 14.4 · Prompt loop is explicit, not SDK-driven
+
+The loop in [`prompt.ts:1239-1487`](https://github.com/sst/opencode/blob/dev/packages/opencode/src/session/prompt.ts#L1239) is `while (true)`. Each iteration either streams a step from `handle.process()` ([processor.ts:368+](https://github.com/sst/opencode/blob/dev/packages/opencode/src/session/processor.ts#L368)), handles a queued subtask, or runs compaction. Stream events drive everything:
+
+| AI SDK event | What OpenCode does |
+|---|---|
+| `text-delta` | accumulate into current text part |
+| `tool-call-started` | `ensureToolCall()` creates pending ToolPart |
+| `tool-call-input-delta` | append to raw input |
+| `tool-call-input-end` | transition to `running` → **execute** |
+| `tool-result` | `completeToolCall()` stores result |
+| `finish` | break loop if no pending tool calls |
+
+External loop (not SDK loop) gives OpenCode room to snapshot, fire plugin hooks, and check permissions between every step.
+
+### 14.5 · Tree-sitter bash permissions — the headline feature
+
+`shell.ts` uses **web-tree-sitter** to parse bash, PowerShell, and cmd.exe into ASTs ([shell.ts:94-400+](https://github.com/sst/opencode/blob/dev/packages/opencode/src/tool/shell.ts#L94)). The AST is walked to extract `command` nodes; each command's tokens are reduced to a canonical prefix via the **arity dictionary** ([permission/arity.ts:24-200+](https://github.com/sst/opencode/blob/dev/packages/opencode/src/permission/arity.ts#L24)) — ~150 entries mapping commands to how many tokens identify them:
+
+```typescript
+// arity examples
+"git" → 2          // "git checkout" matches "git checkout" rule
+"npm run" → 3      // "npm run dev" needs all three tokens
+"docker compose" → 3
+```
+
+Then permission rules match against the prefix. Why this matters: regex rules misclassify `git checkout -- file && rm -rf /` (substring match for `rm` happens; AST sees a second command and checks it separately). The AST also handles quoting and command substitution properly.
+
+### 14.6 · LSP diagnostics, embedded in the tool result
+
+This is the standout. Post-edit ([edit.ts:193-197](https://github.com/sst/opencode/blob/dev/packages/opencode/src/tool/edit.ts#L193)):
+
+```typescript
+yield* lsp.touchFile(filePath, "document")
+const diagnostics = yield* lsp.diagnostics()
+const block = LSP.Diagnostic.report(filePath, diagnostics[normalizedFilePath] ?? [])
+if (block) output += `\n\nLSP errors detected in this file, please fix:\n${block}`
+```
+
+`diagnostics()` blocks up to ~3s waiting for the language server. The model sees compiler-level feedback in the same turn as the edit — no "now run `tsc`" trip required. This is the closest thing in the series to giving the agent a real compiler.
+
+### 14.7 · Two-tier output truncation
+
+`truncate.output()` ([truncate.ts:76-100+](https://github.com/sst/opencode/blob/dev/packages/opencode/src/tool/truncate.ts#L76)) caps every tool result at **50 KB / 2000 lines** (configurable via `tool_output.max_bytes`). Overflow is spilled to `/tmp/.opencode/truncation/tool_<ulid>` and the model gets a hint:
+
+> *…12.3 KB truncated… Use `grep`/`read` with offset/limit to inspect the saved file, or delegate to an explore agent via `task`.*
+
+Tool-level truncation runs before the second tier — **compaction** — which kicks in when total context overflows ([prompt.ts](https://github.com/sst/opencode/blob/dev/packages/opencode/src/session/prompt.ts) auto-triggers `compaction.process()`).
+
+### 14.8 · Shadow-git snapshot per message
+
+Captured **before** the LLM stream starts ([processor.ts:105-121](https://github.com/sst/opencode/blob/dev/packages/opencode/src/session/processor.ts#L105)):
+
+```typescript
+const initialSnapshot = yield* snapshot.track()
+```
+
+Not per-tool. Per-message. Each `edit`/`write` produces its own `FileDiff` ([edit.ts:177-182](https://github.com/sst/opencode/blob/dev/packages/opencode/src/tool/edit.ts#L177)) tracking additions, deletions, and a unified diff. Combined with the snapshot, this gives free revertability without any new infrastructure.
+
+### 14.9 · `task` — synchronous or background
+
+[`task.ts:36-59`](https://github.com/sst/opencode/blob/dev/packages/opencode/src/tool/task.ts#L36):
+
+```typescript
+Parameters = Schema.Struct({
+  description, prompt, subagent_type,
+  task_id: optional(...),       // resume an existing session
+  background: optional(...),    // async mode
+})
+```
+
+Foreground: parent recurses through `ctx.extra.promptOps.loop()` into the child session and blocks until done. Background: `background.run(...)` forks; parent gets a `task_id` and polls via `task_status`. Permissions are derived by `deriveSubagentSessionPermission()` — child inherits the parent's permission set plus the child agent's own rules.
+
+```mermaid
+flowchart LR
+    M[Model tool_call] --> ENS[ensureToolCall]
+    ENS --> ASK{ctx.ask permission}
+    ASK -- shell --> TS[tree-sitter AST<br/>+ arity prefix]
+    TS --> POL{allow/deny match?}
+    POL -- deny --> REJ[Permission.RejectedError]
+    POL -- allow --> EX[Execute]
+    ASK -- other --> EX
+    EX --> LSP{edit/write?}
+    LSP -- yes --> WAIT[3s wait → diagnostics]
+    WAIT --> EMB[Embed errors in output]
+    LSP -- no --> RES[result]
+    EMB --> RES
+    RES --> TR{>50 KB?}
+    TR -- yes --> SPILL[Spill to /tmp/.opencode]
+    TR -- no --> M
+    SPILL --> M
+```
+
+---
+
+## 15. Key Takeaways
 
 1. **Compilers can talk to agents.** LSP-as-feedback turns the language server from a developer tool into a model tool.
 2. **AST > regex for permissions.** Tree-sitter catches escapes regex misses.

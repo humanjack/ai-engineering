@@ -283,6 +283,85 @@ flowchart TB
   </section>
 
   <section>
+    <h2>Deep Dive II · Tool Use</h2>
+    <p>OpenClaw inherits Pi's <code>AgentTool</code> shape unchanged but wraps every tool — Pi's defaults plus ~20 OpenClaw built-ins plus inbound MCP tools — with a single hook at construction. That wrapper is the policy point for the whole runtime.</p>
+
+    <h3>D2.1 · The 5-layer tool stack</h3>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TB
+    L1["<b>1. Pi core (4)</b><br/><span style='font-size:12px;color:#475569'>@earendil-works/pi-agent-core<br/>read · write · edit · bash</span>"]
+    L2["<b>2. OpenClaw built-ins (~20)</b><br/><span style='font-size:12px;color:#475569'>openclaw-tools.ts:373-474<br/>nodes · cron · message · gateway<br/>sessions_* · web_* · tts · update_plan</span>"]
+    L3["<b>3. Skills</b><br/><span style='font-size:12px;color:#475569'>NOT standalone tools<br/>buildWorkspaceSkillsPrompt() adds<br/>descriptions; run through nodes</span>"]
+    L4["<b>4. MCP inbound</b><br/><span style='font-size:12px;color:#475569'>materializeBundleMcpToolsForRun()<br/>tools named {server}_{name}<br/>collision-safe</span>"]
+    L5["<b>5. Sub-agents</b><br/><span style='font-size:12px;color:#475569'>sessions_spawn / sessions_send<br/>runtime: 'subagent' or 'acp'<br/>spawn mode: 'run' or 'session'</span>"]
+    Wrap["<b>wrapToolWithBeforeToolCallHook</b><br/><span style='font-size:12px;color:#475569'>pi-tools.before-tool-call.ts:29<br/>wraps ALL tools at construction</span>"]
+    Pi["<b>Pi's loop runs unchanged</b>"]
+    L1 --> Wrap
+    L2 --> Wrap
+    L3 -. via L2 nodes .-> Wrap
+    L4 --> Wrap
+    L5 --> Wrap
+    Wrap --> Pi
+    classDef l fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#052e16
+    classDef w fill:#fee2e2,stroke:#b91c1c,stroke-width:2px,color:#450a0a
+    classDef p fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#1e1b4b
+    class L1 l
+    class L2 l
+    class L3 l
+    class L4 l
+    class L5 l
+    class Wrap w
+    class Pi p
+      </div>
+    </div>
+
+    <h3>D2.2 · The single wrapper does 5 things</h3>
+    <ul>
+      <li><b>1. Fire <code>before_tool_call</code> plugin hook</b> (pi-tools.before-tool-call.ts:95-170) — can mutate params in place</li>
+      <li><b>2. Veto via <code>BeforeToolCallBlockedError</code></b> — synchronous block</li>
+      <li><b>3. Resolve <code>allow</code> / <code>deny</code> policy</b> from tool-policy.ts — supports <code>group:plugins</code> and per-plugin groups, expanded by <code>expandPluginGroups()</code></li>
+      <li><b>4. Async approval request</b> — for per-channel policies; user approves from WhatsApp, Slack, etc. via the gateway</li>
+      <li><b>5. Inject channel delivery context</b> — channel, to, threadId, <code>senderIsOwner</code></li>
+    </ul>
+
+    <h3>D2.3 · Per-session sandbox + post-call truncation</h3>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart LR
+    Sess["<b>SandboxContext</b><br/><span style='font-size:12px;color:#475569'>sandbox.ts:54-87<br/>per-session backend handle<br/>+ SandboxFsBridge for path translation</span>"]
+    Fac["<b>getSandboxBackendFactory()</b><br/><span style='font-size:12px;color:#475569'>sandbox.ts:14-50</span>"]
+    D["Docker<br/><span style='font-size:12px;color:#475569'>default · container per session</span>"]
+    S["SSH<br/><span style='font-size:12px;color:#475569'>remote host + fs-bridge</span>"]
+    O["OpenShell<br/><span style='font-size:12px;color:#475569'>in-process fallback</span>"]
+    Run["nodes / shell tool runs in backend"]
+    Trunc["<b>truncateToolText (8 KB)</b><br/><span style='font-size:12px;color:#475569'>UTF-16 safe</span>"]
+    After["<b>after_tool_call hook</b>"]
+    Sess --> Fac
+    Fac --> D & S & O --> Run --> Trunc --> After
+    classDef s fill:#fef3c7,stroke:#a16207,stroke-width:2px,color:#422006
+    classDef b fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#052e16
+    classDef r fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#1e1b4b
+    classDef t fill:#fce7f3,stroke:#be185d,stroke-width:2px,color:#500724
+    class Sess s
+    class Fac s
+    class D b
+    class S b
+    class O b
+    class Run r
+    class Trunc t
+    class After t
+      </div>
+    </div>
+    <ul>
+      <li><b>Sandboxing is per-session</b>, not per-tool — a session spawned with <code>runtime: "subagent"</code> gets its own container; the main session runs locally by default</li>
+      <li><b>Tool results are truncated, not cached</b> — <code>TOOL_RESULT_MAX_CHARS = 8000</code> (pi-embedded-subscribe.tools.ts:17-40); the <code>openclaw.cache-ttl</code> markers in the comparison apply to <b>prompt-cache discipline</b>, not tool results</li>
+      <li><b><code>update_plan</code> is opt-in</b> — gated at construction time (openclaw-tools.ts:360-372) by config or model/provider rules</li>
+      <li><b>Failover is run-scoped</b> — model errors trigger <code>runWithModelFallback()</code> which restarts the whole turn with the fallback model, not the failed tool call alone (keeps prompt-cache windows aligned)</li>
+    </ul>
+  </section>
+
+  <section>
     <h2>9 · LLM Integration — Pi-ai + Per-Provider Plugins</h2>
     <p>OpenClaw doesn't ship its own LLM SDK. Every call to a model goes through Pi's <code>pi-ai</code> package (see the <a href="pi.html">Pi page</a> for that internal layer). On top, OpenClaw adds <b>per-provider plugins</b>, <b>auth profile rotation</b>, and <b>provider-specific cache-TTL eligibility</b> rules — the operational concerns Pi-ai doesn't try to solve.</p>
 

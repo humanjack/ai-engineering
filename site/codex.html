@@ -353,6 +353,81 @@ flowchart TB
   </section>
 
   <section>
+    <h2>Deep Dive II · Tool Use</h2>
+    <p>Codex's tool system reads like a production system because it is one. Struct-based schemas, trait-based dispatch, three independent OS-level sandbox layers per call, and bidirectional MCP — all gated by a Starlark allowlist <em>before</em> the sandbox ever spins up.</p>
+
+    <h3>D2.1 · Tool definitions and dispatch</h3>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TB
+    Def["<b>ToolDefinition (struct)</b><br/><span style='font-size:12px;color:#475569'>tools/src/tool_definition.rs:1<br/>name · description · input_schema · output_schema · defer_loading</span>"]
+    Reg["<b>ToolRegistry</b><br/><span style='font-size:12px;color:#475569'>core/src/tools/registry.rs:249<br/>HashMap&lt;ToolName, Arc&lt;dyn CoreToolRuntime&gt;&gt;<br/>built via from_tools()</span>"]
+    Router["<b>ToolRouter.dispatch_any_with_terminal_outcome</b><br/><span style='font-size:12px;color:#475569'>registry.rs:326<br/>lookup → PreToolUse hook → handle() → PostToolUse hook</span>"]
+    Handlers["<b>Handlers (impl ToolExecutor)</b><br/><span style='font-size:12px;color:#475569'>ExecCommandHandler · ApplyPatchHandler<br/>PlanHandler · McpHandler · multi_agents_v2</span>"]
+    Def --> Reg --> Router --> Handlers
+    classDef d fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#1e1b4b
+    classDef r fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#052e16
+    classDef ro fill:#ede9fe,stroke:#6d28d9,stroke-width:2px,color:#2e1065
+    classDef h fill:#fce7f3,stroke:#be185d,stroke-width:2px,color:#500724
+    class Def d
+    class Reg r
+    class Router ro
+    class Handlers h
+      </div>
+    </div>
+    <ul>
+      <li><b>~15 built-ins in <code>spec_plan.rs</code></b> — <code>exec_command</code>, <code>apply_patch</code>, <code>update_plan</code>, <code>spawn_agent/send_message/wait_agent/close_agent/list_agents</code>, plus MCP tools</li>
+      <li><b>Streaming patch parser</b> — <code>ApplyPatchArgumentDiffConsumer</code> buffers delta chunks every 500 ms; emits <code>PatchApplyUpdatedEvent</code> for live UI</li>
+      <li><b>MCP schema masking</b> — <code>tool_with_model_visible_input_schema()</code> (codex-mcp/src/tools.rs:117) hides file-path params from the model — defense-in-depth at the schema layer</li>
+    </ul>
+
+    <h3>D2.2 · Three sandbox layers + execpolicy</h3>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TD
+    Call["Tool call: exec_command"]
+    Policy["<b>execpolicy (Starlark)</b><br/><span style='font-size:12px;color:#475569'>program + args matched<br/>against allowlist BEFORE sandbox</span>"]
+    Hook["<b>PreToolUse hook</b><br/><span style='font-size:12px;color:#475569'>registry.rs:416<br/>programmable veto</span>"]
+    Profile{"<b>Approval profile</b><br/><span style='font-size:12px;color:#475569'>workspace-write / on-request /<br/>read-only / never</span>"}
+    Linux["<b>Linux</b><br/><span style='font-size:12px;color:#475569'>bwrap + seccomp + Landlock<br/>3 independent layers</span>"]
+    Mac["<b>macOS</b><br/><span style='font-size:12px;color:#475569'>Seatbelt .sbpl<br/>SandboxablePreference::Auto</span>"]
+    Win["<b>Windows</b><br/><span style='font-size:12px;color:#475569'>AppContainer<br/>SandboxAttempt carries level</span>"]
+    Exec["Execute → cap output via approx_token_count"]
+    Call --> Policy --> Hook --> Profile
+    Profile --> Linux & Mac & Win --> Exec
+    classDef c fill:#fef3c7,stroke:#a16207,stroke-width:2px,color:#422006
+    classDef p fill:#fee2e2,stroke:#b91c1c,stroke-width:2px,color:#450a0a
+    classDef h fill:#ede9fe,stroke:#6d28d9,stroke-width:2px,color:#2e1065
+    classDef pr fill:#fce7f3,stroke:#be185d,stroke-width:2px,color:#500724
+    classDef l fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#052e16
+    classDef e fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#1e1b4b
+    class Call c
+    class Policy p
+    class Hook h
+    class Profile pr
+    class Linux l
+    class Mac l
+    class Win l
+    class Exec e
+      </div>
+    </div>
+    <ul>
+      <li><b>execpolicy runs first</b> — Starlark program evaluates <code>(program, args)</code> tuple; rejection returns <code>FunctionCallError::RespondToModel</code> with policy reason. The model never even reaches sandbox setup for a disallowed command</li>
+      <li><b>Approval cache per canonicalized command</b> — <code>runtimes/unified_exec.rs:131-140</code>; once the user approves <code>git push origin main</code>, future calls with the same canonical form skip the prompt</li>
+      <li><b>OS sandbox is the floor, not the wall</b> — even with approval + execpolicy pass, the OS layer enforces (Landlock can't read <code>~/.ssh</code> even if bwrap is mis-configured)</li>
+      <li><b>Per-platform truncation</b> — <code>ExecCommandToolOutput::truncate_and_serialize()</code> uses <code>approx_token_count()</code> (handlers/unified_exec/exec_command.rs:279) so the model's view stays under cap regardless of the actual byte count</li>
+    </ul>
+
+    <h3>D2.3 · MCP both ways + multi-agent V2</h3>
+    <ul>
+      <li><b>Outbound MCP</b> — <code>codex-mcp/</code>; <code>ConnectionManager</code> + <code>ToolInfo</code> + <code>normalize_tools_for_model()</code> dedupe across servers</li>
+      <li><b>Inbound MCP</b> — <code>mcp-server/</code> exposes Codex's own tool set; other agents can call Codex</li>
+      <li><b>First-class sub-agents</b> — <code>SpawnAgentHandlerV2</code>, <code>SendMessageHandlerV2</code> (mailbox push), <code>WaitAgentHandlerV2</code> (UntilTerminal + timeout), <code>CloseAgentHandlerV2</code>, <code>ListAgentsHandlerV2</code>; messages flow as <code>CollabAgentInteractionBeginEvent</code> — same protocol UIs consume</li>
+      <li><b><code>update_plan</code> is gated</b> — disabled in Plan mode (handlers/plan.rs:79); emits <code>PlanUpdate</code> event for UI; no side effects on turn loop</li>
+    </ul>
+  </section>
+
+  <section>
     <h2>11 · LLM Integration — Pure Rust, WebSocket-Primary Responses API</h2>
     <p>Codex is the only agent in this series that uses <b>no LLM library at all</b>. It talks to providers via raw <code>reqwest</code> for HTTPS and <code>tokio-tungstenite</code> for WebSockets, with the OpenAI Responses API as its native protocol and bespoke adapters for everything else.</p>
 

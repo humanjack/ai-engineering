@@ -310,6 +310,96 @@ flowchart TB
   </section>
 
   <section>
+    <h2>Deep Dive II · Tool Use</h2>
+    <p>Deep Agents inherits LangChain's <code>BaseTool</code> and <code>create_agent</code> foundations, but the interesting part is what middleware does <em>around</em> tool calls: result eviction, summarization, filtering, and sub-agent dispatch all run through <code>wrap_tool_call()</code>.</p>
+
+    <h3>D2.1 · <code>wrap_tool_call</code> is the universal hook</h3>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TB
+    Model["Model returns tool_call"]
+    M1["TodoListMiddleware"]
+    M2["FilesystemMiddleware"]
+    M3["SummarizationMiddleware"]
+    M4["SubAgentMiddleware"]
+    Mu["User middleware"]
+    Mex["_ToolExclusionMiddleware<br/><span style='font-size:12px;color:#475569'>drops tools by HarnessProfile</span>"]
+    Exec["Tool execute<br/><span style='font-size:12px;color:#475569'>via BackendProtocol</span>"]
+    Result["Result"]
+    Check{"&gt; 20k tokens?"}
+    Off["<b>Offload to /large_tool_results/{id}</b><br/><span style='font-size:12px;color:#475569'>_offload_tool_message_content()<br/>head + tail preview replaces message<br/>same backend as the tool</span>"]
+    OK["Pass through"]
+    Model --> M1 --> M2 --> M3 --> M4 --> Mu --> Mex --> Exec --> Result --> Check
+    Check -- "yes" --> Off --> Model
+    Check -- "no" --> OK --> Model
+    classDef m fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#052e16
+    classDef e fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#1e1b4b
+    classDef c fill:#fef3c7,stroke:#a16207,stroke-width:2px,color:#422006
+    classDef o fill:#fee2e2,stroke:#b91c1c,stroke-width:2px,color:#450a0a
+    classDef k fill:#ede9fe,stroke:#6d28d9,stroke-width:2px,color:#2e1065
+    class Model e
+    class M1 m
+    class M2 m
+    class M3 m
+    class M4 m
+    class Mu m
+    class Mex m
+    class Exec e
+    class Result e
+    class Check c
+    class Off o
+    class OK k
+      </div>
+    </div>
+    <ul>
+      <li><b>Two symmetric hooks</b> — <code>wrap_model_call</code> (manages prompts, tool filtering, context eviction) and <code>wrap_tool_call</code> (handles result processing, permission checks). No separate ToolNode or router</li>
+      <li><b>Linear composition</b> — <code>M1.wrap_tool_call → M2.wrap_tool_call → … → actual execute</code>; each can short-circuit, mutate the request, or post-process the result</li>
+      <li><b>Tools merge via <code>wrap_model_call</code></b> — middleware injects tools into <code>ModelRequest.tools</code>; user <code>tools=[…]</code> and middleware-provided tools are indistinguishable from the model's perspective</li>
+    </ul>
+
+    <h3>D2.2 · Backend-routed file ops</h3>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart LR
+    Tool["read_file / write_file / ls / grep / execute"]
+    Proto["<b>BackendProtocol</b><br/><span style='font-size:12px;color:#475569'>backends/protocol.py:100-500<br/>aread · awrite · als · aexecute</span>"]
+    SB["<b>StateBackend</b><br/><span style='font-size:12px;color:#475569'>in-memory dict, default</span>"]
+    FB["<b>FilesystemBackend</b><br/><span style='font-size:12px;color:#475569'>real disk</span>"]
+    CB["<b>CompositeBackend</b><br/><span style='font-size:12px;color:#475569'>prefix routing<br/>/sandbox/* → VM, / → FS</span>"]
+    SBP["<b>SandboxBackendProtocol</b><br/><span style='font-size:12px;color:#475569'>Runloop · Daytona · Modal<br/>(enables execute)</span>"]
+    Tool --> Proto
+    Proto --> SB
+    Proto --> FB
+    Proto --> CB
+    Proto --> SBP
+    classDef t fill:#fef3c7,stroke:#a16207,stroke-width:2px,color:#422006
+    classDef p fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#1e1b4b
+    classDef b fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#052e16
+    class Tool t
+    class Proto p
+    class SB b
+    class FB b
+    class CB b
+    class SBP b
+      </div>
+    </div>
+    <ul>
+      <li><b>Same tool, different physical backend</b> — <code>write_file</code> hits a Python dict, a real disk file, or a Runloop VM depending on the backend bound at construction; tools never know</li>
+      <li><b>Eviction uses the same backend</b> — when a result exceeds ~20 K tokens, <code>_offload_tool_message_content()</code> writes the full text to <code>/large_tool_results/{sanitized_id}</code> through the same backend the tool would use. The agent retrieves chunks via <code>read_file</code></li>
+      <li><b>Head/tail preview</b> — <code>_create_content_preview()</code> returns first 5 lines + truncation marker + last 5 lines, with line numbers, lines capped at 1000 chars</li>
+    </ul>
+
+    <h3>D2.3 · Sub-agents and skills</h3>
+    <ul>
+      <li><b>Declarative TypedDicts</b> — <code>{name, description, system_prompt, model?, tools?, middleware?, skills?, permissions?}</code>; <code>create_deep_agent</code> builds a fresh middleware stack per subagent at construction</li>
+      <li><b>Ephemeral and parallelizable</b> — each <code>task()</code> call spawns a fresh context window; no parent state shared except the return value</li>
+      <li><b>Skills are NOT tools</b> — <code>SkillsMiddleware</code> appends markdown content to the system prompt as progressive disclosure; the model decides when to use them</li>
+      <li><b>Overflow → summarize, not error</b> — <code>_DeepAgentsSummarizationMiddleware</code> catches <code>ContextOverflowError</code>, trims tool-message tails via <code>_clip_overflow_tail()</code> (truncates <code>read_file</code> in place, offloads others), then re-invokes the model</li>
+      <li><b>Schema translation is LangChain's job</b> — Deep Agents never sees provider-specific tool JSON; <code>init_chat_model()</code> handles per-provider encoding</li>
+    </ul>
+  </section>
+
+  <section>
     <h2>10 · LLM Integration — LangChain + ProviderProfile Registry</h2>
     <p>Deep Agents is the only agent in this series that explicitly builds on a third-party agent framework. The LLM is resolved via LangChain's <code>init_chat_model()</code>, wrapped as a <code>BaseChatModel</code>, and consumed by the LangGraph state graph through the middleware stack.</p>
 

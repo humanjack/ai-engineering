@@ -406,7 +406,142 @@ More than "spawn another agent" — it's a coordination layer with mailboxes, `O
 
 ---
 
-## 15. Key Takeaways
+## 15. Deep Dive — Tool Use
+
+Codex's tool system reads like a hardened production system because it is one. The themes: **explicit schemas**, **trait-based dispatch**, **OS-enforced sandboxing per tool call**, and **bidirectional MCP**.
+
+### 15.1 · Tool definition is a struct, schema is JSON
+
+The shape ([codex-rs/tools/src/tool_definition.rs:1-26](https://github.com/openai/codex/blob/main/codex-rs/tools/src/tool_definition.rs#L1)):
+
+```rust
+pub struct ToolDefinition {
+    pub name: String,
+    pub description: String,
+    pub input_schema: JsonSchema,
+    pub output_schema: Option<JsonValue>,
+    pub defer_loading: bool,
+}
+```
+
+Handlers implement the `ToolExecutor<ToolInvocation>` trait and produce a `ToolSpec` exposing this definition. `defer_loading` lets some tools register their schema lazily — useful for MCP tools that need a server connection before their schema is known.
+
+### 15.2 · The ~15 built-ins, all in `spec_plan.rs`
+
+The complete inventory lives in [`core/src/tools/spec_plan.rs`](https://github.com/openai/codex/blob/main/codex-rs/core/src/tools/spec_plan.rs):
+
+| Tool | Handler | Notes |
+|---|---|---|
+| `exec_command`, `write_stdin` | `ExecCommandHandler` | Unified execution; sandbox-aware ([handlers/unified_exec/exec_command.rs:49](https://github.com/openai/codex/blob/main/codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs#L49)) |
+| `shell` | `ShellCommandHandler` | Legacy single-shot shell |
+| `apply_patch` | `ApplyPatchHandler` | Codex-style streaming patch ([handlers/apply_patch.rs:59](https://github.com/openai/codex/blob/main/codex-rs/core/src/tools/handlers/apply_patch.rs#L59)) |
+| `update_plan` | `PlanHandler` | Emits `PlanUpdate`; disabled in Plan mode ([handlers/plan.rs:79](https://github.com/openai/codex/blob/main/codex-rs/core/src/tools/handlers/plan.rs#L79)) |
+| `request_user_input`, `request_permissions` | — | Interactive prompts |
+| `list_available_plugins`, `request_plugin_install` | — | Plugin discovery |
+| `view_image` | `ViewImageHandler` | Multi-modal input |
+| `spawn_agent`, `send_message`, `wait_agent`, `close_agent`, `list_agents` | Multi-agent V2 | Registry + mailboxes ([spec_plan.rs:631-670](https://github.com/openai/codex/blob/main/codex-rs/core/src/tools/spec_plan.rs#L631)) |
+| `spawn_agents_on_csv`, `report_agent_job_result` | Agent jobs | Batch spawning |
+| MCP tools | `McpHandler` | Variable count, registered via inbound clients |
+
+### 15.3 · Registry + router dispatch
+
+`ToolRegistry` ([registry.rs:249](https://github.com/openai/codex/blob/main/codex-rs/core/src/tools/registry.rs#L249)) is a `HashMap<ToolName, Arc<dyn CoreToolRuntime>>`. Construction via `from_tools()` ([:258](https://github.com/openai/codex/blob/main/codex-rs/core/src/tools/registry.rs#L258)), lookup via `tool()` ([:285](https://github.com/openai/codex/blob/main/codex-rs/core/src/tools/registry.rs#L285)).
+
+`ToolRouter::dispatch_tool_call_with_code_mode_result()` calls into `dispatch_any_with_terminal_outcome()` ([:326](https://github.com/openai/codex/blob/main/codex-rs/core/src/tools/registry.rs#L326)):
+
+1. Find handler — `self.tool(&tool_name)` ([:363](https://github.com/openai/codex/blob/main/codex-rs/core/src/tools/registry.rs#L363))
+2. Build pre-tool-use payload via `CoreToolRuntime::pre_tool_use_payload()` ([:65-71](https://github.com/openai/codex/blob/main/codex-rs/core/src/tools/registry.rs#L65))
+3. Fire **PreToolUse** hooks ([:416](https://github.com/openai/codex/blob/main/codex-rs/core/src/tools/registry.rs#L416)) — can block via `FunctionCallError`
+4. Run `tool.handle()` — the actual execution
+5. Fire **PostToolUse** hooks ([:523+](https://github.com/openai/codex/blob/main/codex-rs/core/src/tools/registry.rs#L523))
+6. Return `AnyToolResult`
+
+### 15.4 · `apply_patch` parses streaming, applies whole
+
+The Codex-style patch format is parsed by `StreamingPatchParser` from the `codex_apply_patch` crate. `ApplyPatchArgumentDiffConsumer` ([apply_patch.rs:56](https://github.com/openai/codex/blob/main/codex-rs/core/src/tools/handlers/apply_patch.rs#L56)) buffers delta chunks every 500 ms and emits `PatchApplyUpdatedEvent`s so the UI can render progress as the model streams the patch. Final hunks go to `ApplyPatchRuntime::apply()` which routes through the active filesystem sandbox.
+
+### 15.5 · Three sandboxes per platform — the headline
+
+Sandbox routing lives in `UnifiedExecRuntime::run()` ([runtimes/unified_exec.rs:250](https://github.com/openai/codex/blob/main/codex-rs/core/src/tools/runtimes/unified_exec.rs#L250)), with platform-specific wiring in `build_sandbox_command()` ([:340](https://github.com/openai/codex/blob/main/codex-rs/core/src/tools/runtimes/unified_exec.rs#L340)):
+
+| Platform | Enforcement |
+|---|---|
+| Linux | bwrap + seccomp + Landlock (independent layers); Landlock policy from `effective_file_system_sandbox_policy()` ([apply_patch.rs:49](https://github.com/openai/codex/blob/main/codex-rs/core/src/tools/handlers/apply_patch.rs#L49)) |
+| macOS | Seatbelt via `SandboxablePreference::Auto` ([:121](https://github.com/openai/codex/blob/main/codex-rs/core/src/tools/runtimes/unified_exec.rs#L121)); `.sbpl` policy injected inside exec-server |
+| Windows | AppContainer; `disable_powershell_profile_for_elevated_windows_sandbox()` ([:276](https://github.com/openai/codex/blob/main/codex-rs/core/src/tools/runtimes/unified_exec.rs#L276)); `SandboxAttempt` carries level ([:280](https://github.com/openai/codex/blob/main/codex-rs/core/src/tools/runtimes/unified_exec.rs#L280)) |
+
+On top of OS sandboxing sits the Starlark-based **execpolicy** ([hook input rewriting at registry.rs:416](https://github.com/openai/codex/blob/main/codex-rs/core/src/tools/registry.rs#L416)) which validates `(program, args)` against an allowlist before any sandbox even spins up. Approvals are cached per canonicalized command ([unified_exec.rs:131-140](https://github.com/openai/codex/blob/main/codex-rs/core/src/tools/runtimes/unified_exec.rs#L131)) so the same command isn't re-prompted within a session.
+
+### 15.6 · Approval profiles gate the gate
+
+Tool execution checks `approval_policy.value()` against the active permission profile ([exec_command.rs:186](https://github.com/openai/codex/blob/main/codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs#L186)):
+
+| Profile | workspace-write | read-only | on-request | never |
+|---|---|---|---|---|
+| Read | ✗ | ✓ | ✗ | ✗ |
+| Edit | ✓ | ✓ | ✓ | ✗ |
+| Execute | ✓ | ✓ | ✓ | ✓ |
+
+`AskForApproval::OnRequest` flips control to the user. The PreToolUse hook can also block ([:426](https://github.com/openai/codex/blob/main/codex-rs/core/src/tools/registry.rs#L426)) — a separate, programmable veto channel.
+
+### 15.7 · MCP, both directions
+
+**Outbound** ([`codex-mcp/`](https://github.com/openai/codex/tree/main/codex-rs/codex-mcp/src)):
+- `ConnectionManager` ([connection_manager.rs](https://github.com/openai/codex/blob/main/codex-rs/codex-mcp/src/connection_manager.rs)) keeps client lifecycles
+- `ToolInfo` ([tools.rs:29](https://github.com/openai/codex/blob/main/codex-rs/codex-mcp/src/tools.rs#L29)) wraps MCP tools with Codex metadata
+- `normalize_tools_for_model()` ([tools.rs:144](https://github.com/openai/codex/blob/main/codex-rs/codex-mcp/src/tools.rs#L144)) sanitizes names + dedupes across servers
+- `tool_with_model_visible_input_schema()` ([tools.rs:117](https://github.com/openai/codex/blob/main/codex-rs/codex-mcp/src/tools.rs#L117)) masks sensitive parameters (file paths!) so the model can't trivially exfiltrate
+- `supports_parallel_tool_calls` ([tools.rs:34](https://github.com/openai/codex/blob/main/codex-rs/codex-mcp/src/tools.rs#L34)) propagates per-tool
+
+**Inbound** ([`mcp-server/`](https://github.com/openai/codex/tree/main/codex-rs/mcp-server/src)): exposes Codex itself as an MCP server, so other agents can call Codex tools.
+
+### 15.8 · Sub-agents are first-class
+
+Multi-agent V2 ([handlers/multi_agents_v2/](https://github.com/openai/codex/tree/main/codex-rs/core/src/tools/handlers/multi_agents_v2)):
+
+```
+spawn_agent  → SpawnAgentHandlerV2
+send_message → SendMessageHandlerV2     # mailbox push
+wait_agent   → WaitAgentHandlerV2       # blocks parent on UntilTerminal + timeout
+close_agent  → CloseAgentHandlerV2
+list_agents  → ListAgentsHandlerV2
+```
+
+`resolve_agent_target()` ([multi_agents_v2.rs:4](https://github.com/openai/codex/blob/main/codex-rs/core/src/tools/handlers/multi_agents_v2.rs#L4)) maps `AgentPath` to an active session. Messages flow as `CollabAgentInteractionBeginEvent` etc. — the same event protocol UIs consume, just routed agent-to-agent.
+
+### 15.9 · Mid-turn compaction with provider-specific impls
+
+`ContextWindowExceeded` triggers `run_inline_auto_compact_task()` ([compact.rs:69](https://github.com/openai/codex/blob/main/codex-rs/core/src/compact.rs#L69)) which injects the compaction summary `BeforeLastUserMessage` ([compact.rs:57](https://github.com/openai/codex/blob/main/codex-rs/core/src/compact.rs#L57)) and resumes. Pre-compact hook ([:140](https://github.com/openai/codex/blob/main/codex-rs/core/src/compact.rs#L140)) can block, post-compact ([:161](https://github.com/openai/codex/blob/main/codex-rs/core/src/compact.rs#L161)) gets fired after. Three implementations cover OpenAI (Responses API retry), Anthropic (inline), and other providers (pre-turn fallback).
+
+### 15.10 · Output truncation is per-tool
+
+`ExecCommandToolOutput::truncate_and_serialize()` enforces `DEFAULT_OUTPUT_BYTES_CAP` (from `codex_utils_pty`) or a per-tool `max_output_tokens` override ([exec_command.rs:259, 279](https://github.com/openai/codex/blob/main/codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs#L259)). Token counting uses `approx_token_count()` — model-aware so the model's view stays under cap.
+
+```mermaid
+flowchart TD
+    M[Model tool_call] --> D[ToolRouter.dispatch]
+    D --> H1[execpolicy<br/>Starlark allowlist]
+    H1 -- deny --> RM[FunctionCallError::RespondToModel]
+    H1 -- allow --> H2[PreToolUse hook<br/>can block]
+    H2 -- block --> RM
+    H2 -- allow --> AP{Approval profile<br/>workspace-write / on-request / …}
+    AP -- ask --> USR[User approves<br/>cached per command]
+    AP -- never --> RM
+    AP -- allow --> SB{Sandbox layer}
+    SB --> LX[Linux: bwrap + seccomp + Landlock]
+    SB --> MAC[macOS: Seatbelt .sbpl]
+    SB --> WIN[Windows: AppContainer]
+    LX --> EX[Execute]
+    MAC --> EX
+    WIN --> EX
+    EX --> TR[Truncate output<br/>per-tool cap, token-aware]
+    TR --> H3[PostToolUse hook]
+    H3 --> M
+```
+
+---
+
+## 16. Key Takeaways
 
 1. **The sandbox is the lesson.** Three independent enforcement layers + metadata masking is the strongest current take on "untrust the model".
 2. **One protocol unlocks many frontends.** TUI, exec, app-server, MCP-in all speak `Op`/`EventMsg` to the same `submission_loop` — every UI is just a different mouth.

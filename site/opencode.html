@@ -311,6 +311,76 @@ flowchart TB
   </section>
 
   <section>
+    <h2>Deep Dive II · Tool Use</h2>
+    <p>OpenCode's tool stack is the most production-engineered in the series: Effect-based schemas (not bare Zod), tree-sitter bash AST for permissions, and LSP diagnostics embedded into tool results within the same turn.</p>
+
+    <h3>D2.1 · Effect Schema + rich execution context</h3>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TB
+    Def["<b>Tool.Def&lt;Parameters, Metadata&gt;</b><br/><span style='font-size:12px;color:#475569'>packages/opencode/src/tool/tool.ts:53-63<br/>id · description · parameters (Effect Schema)<br/>execute: (args, ctx) =&gt; Effect&lt;ExecuteResult&gt;</span>"]
+    Init["<b>Tool.define() / Tool.init()</b><br/><span style='font-size:12px;color:#475569'>compiles validation closure ONCE<br/>wires spans + output truncation</span>"]
+    Ctx["<b>Context</b><br/><span style='font-size:12px;color:#475569'>sessionID · messageID · callID<br/>abort signal · metadata() · ask()<br/>extra: promptOps, bypassAgentCheck</span>"]
+    Reg["<b>Registry</b><br/><span style='font-size:12px;color:#475569'>tool/registry.ts:141-276<br/>{custom, builtin, task, read}<br/>per-model filtering (apply_patch vs edit)</span>"]
+    Def --> Init --> Reg
+    Init -. invoked with .-> Ctx
+    classDef d fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#1e1b4b
+    classDef i fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#052e16
+    classDef c fill:#fef3c7,stroke:#a16207,stroke-width:2px,color:#422006
+    classDef r fill:#ede9fe,stroke:#6d28d9,stroke-width:2px,color:#2e1065
+    class Def d
+    class Init i
+    class Ctx c
+    class Reg r
+      </div>
+    </div>
+    <ul>
+      <li><b>Effect Schema, not plain Zod</b> — composable, type-safe FX; JSON Schema generated per-provider via <code>ProviderTransform.schema()</code></li>
+      <li><b><code>ctx.ask()</code></b> suspends execution until the user decides — inline permissions inside the tool, no out-of-band protocol</li>
+      <li><b>Per-model tool filtering</b> — GPT family gets <code>apply_patch</code>, everyone else gets <code>edit</code> (registry.ts:322-367)</li>
+      <li><b>Disk + plugin tools</b> — registry scans <code>{tool,tools}/*.{js,ts}</code> in config dirs at init</li>
+    </ul>
+
+    <h3>D2.2 · Tree-sitter bash + arity dictionary</h3>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart LR
+    Cmd["<b>Shell call</b><br/><span style='font-size:12px;color:#475569'>'git checkout main && rm -rf /'</span>"]
+    TS["<b>web-tree-sitter</b><br/><span style='font-size:12px;color:#475569'>parse bash / PowerShell / cmd.exe<br/>shell.ts:94-400+</span>"]
+    AST["AST: 2 command nodes"]
+    Arity["<b>arity.ts dictionary</b><br/><span style='font-size:12px;color:#475569'>~150 entries: git→2, npm run→3,<br/>docker compose→3, …</span>"]
+    Pref["Canonical prefix per command"]
+    Rule["<b>allow / deny rules</b><br/><span style='font-size:12px;color:#475569'>pattern match per prefix</span>"]
+    Cmd --> TS --> AST --> Arity --> Pref --> Rule
+    classDef c fill:#fef3c7,stroke:#a16207,stroke-width:2px,color:#422006
+    classDef t fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#052e16
+    classDef a fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#1e1b4b
+    classDef p fill:#ede9fe,stroke:#6d28d9,stroke-width:2px,color:#2e1065
+    classDef r fill:#fce7f3,stroke:#be185d,stroke-width:2px,color:#500724
+    class Cmd c
+    class TS t
+    class AST t
+    class Arity a
+    class Pref p
+    class Rule r
+      </div>
+    </div>
+    <ul>
+      <li><b>AST > regex</b> — chained commands become separate AST nodes, each checked against the prefix; substring tricks like <code>"&& rm -rf /"</code> can't slip through</li>
+      <li><b>Arity dictionary</b> normalizes commands — <code>git checkout</code>, <code>git commit</code> both reduce to a 2-token prefix; <code>npm run dev</code> needs all 3</li>
+    </ul>
+
+    <h3>D2.3 · LSP diagnostics + truncation + shadow-git</h3>
+    <ul>
+      <li><b>LSP feedback embedded</b> — after <code>edit</code>/<code>write</code>, <code>lsp.touchFile()</code> → <code>lsp.diagnostics()</code> (3 s blocking wait); errors append to the tool's output string with <code>file:line:col</code> refs (edit.ts:193-197)</li>
+      <li><b>Per-message shadow-git snapshot</b> — captured BEFORE the LLM stream starts (processor.ts:105-121); each tool produces its own <code>FileDiff</code> with unified diff + additions/deletions counts</li>
+      <li><b>Two-tier truncation</b> — every tool result capped at 50 KB / 2000 lines (configurable via <code>tool_output.max_bytes</code>); overflow spilled to <code>/tmp/.opencode/truncation/tool_&lt;ulid&gt;</code> with a hint to use <code>grep</code>, <code>read</code> with offset/limit, or delegate via <code>task</code></li>
+      <li><b><code>task</code> — sync or background</b> — foreground recurses through <code>ctx.extra.promptOps.loop()</code>; background uses <code>background.run(...)</code> + <code>task_status</code> polling. Child permissions derived from parent via <code>deriveSubagentSessionPermission()</code></li>
+      <li><b>MCP outbound only</b> — 4 transports (stdio, HTTP, SSE, registry); MCP <code>CallToolResult</code> ContentItems unwrapped to text + AttachmentParts before re-entering the loop</li>
+    </ul>
+  </section>
+
+  <section>
     <h2>11 · LLM Integration — Vercel AI SDK + 19 Providers</h2>
     <p>OpenCode is the only agent in this series built on a <b>meta-SDK</b>. Every model call goes through <a href="https://sdk.vercel.ai/"><code>ai</code></a> (Vercel AI SDK) via <code>streamText</code>, with <b>nineteen</b> provider packages pre-wired in <code>package.json</code>.</p>
 
