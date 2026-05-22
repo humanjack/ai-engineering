@@ -1,0 +1,98 @@
+%% Presenton — runtime process topology and storage
+%% Inside a single container/Electron process; nginx fronts FastAPI + Next + MCP
+graph TB
+    subgraph Client["Client"]
+        Browser[Browser / Electron WebView]
+        ExtAgent[External MCP client<br/>e.g. Claude Desktop]
+        WebhookConsumer[Webhook subscriber<br/>user's server]
+    end
+
+    subgraph Container["Container / Electron app (one process tree)"]
+        direction TB
+        Nginx["nginx :80<br/>auth_request gates /app_data/*"]
+
+        subgraph Services["Cooperating services (started by start.js)"]
+            FastAPI["FastAPI :8000<br/>uvicorn + SQLModel<br/>•18 ppt endpoints<br/>•auth + middlewares<br/>•SSE streaming"]
+            NextJS["Next.js :3000<br/>•editor UI<br/>•/pdf-maker headless page<br/>•/api/template — parses TSX<br/>  via esbuild/Babel"]
+            MCP["FastMCP :8001<br/>FastMCP.from_openapi(<br/>  openai_spec.json)<br/>→ httpx → FastAPI"]
+            Ollama["ollama serve<br/>(optional, on demand)"]
+        end
+
+        subgraph Engine["Engine internals (in-process inside FastAPI)"]
+            llmai["llmai client router<br/>14 providers"]
+            ImgGen["ImageGenerationService<br/>9 backends"]
+            IconFind["IconFinderService<br/>FastEmbed + Phosphor catalogue"]
+            DocsLoader["DocumentsLoader<br/>spawns LiteParse Node CLI"]
+            Mem0["Mem0PresentationMemoryService<br/>+ chat memory_layer"]
+            ChatSvc["PresentationChatService<br/>12 tools, schema-retry loop"]
+            ExportSvc["ExportTaskService<br/>spawn node export runtime"]
+        end
+
+        subgraph ChildProcs["Spawned child processes"]
+            LiteParse["@llamaindex/liteparse<br/>+ Tesseract OCR"]
+            ExportRT["Node export runtime<br/>presentation-export/index.cjs<br/>(Puppeteer + pptxgenjs)"]
+            LibreOffice["LibreOffice (PPTX→PDF/PNG)"]
+        end
+
+        subgraph Storage["/app_data (volume-mounted)"]
+            SQLite[("SQLite<br/>presentations, slides,<br/>templates, layout_code, …")]
+            ExportsDir[/app_data/exports/]
+            ImagesDir[/app_data/images/]
+            UploadsDir[/app_data/uploads/]
+            FontsDir[/app_data/fonts/]
+            Mem0Dir[/app_data/mem0/]
+            UserCfg[userConfig.json<br/>LLM choice, API keys,<br/>auth hash]
+        end
+    end
+
+    Browser -->|HTTP/SSE| Nginx
+    Nginx -->|/| NextJS
+    Nginx -->|/api/v1/*| FastAPI
+    Nginx -->|/docs /openapi.json| FastAPI
+    Nginx -->|/mcp /mcp/*| MCP
+    Nginx -->|/static<br/>/app_data/* + auth_request| Storage
+
+    ExtAgent -->|MCP HTTP| Nginx
+
+    NextJS -->|fetch SSR/middleware| FastAPI
+    NextJS -->|/api/template| FastAPI
+    MCP -->|httpx 127.0.0.1:8000| FastAPI
+
+    FastAPI --> llmai
+    FastAPI --> ImgGen
+    FastAPI --> IconFind
+    FastAPI --> DocsLoader
+    FastAPI --> Mem0
+    FastAPI --> ChatSvc
+    FastAPI --> ExportSvc
+
+    ChatSvc -.uses.-> llmai
+    ChatSvc -.uses.-> ImgGen
+    ChatSvc -.uses.-> IconFind
+
+    DocsLoader -.spawn.-> LiteParse
+    DocsLoader -.spawn.-> LibreOffice
+    ExportSvc -.spawn.-> ExportRT
+    ExportRT -->|headless GET| NextJS
+
+    llmai -.->|configured provider| OpenAI[OpenAI / Anthropic / Google /<br/>Bedrock / Ollama / 9 more]
+    ImgGen -.->|configured provider| ImgProviders[DALL-E / GPT-Image-1.5 /<br/>Gemini Flash / ComfyUI /<br/>Pexels / Pixabay / …]
+    Ollama -.optional local LLM.-> llmai
+
+    FastAPI --> SQLite
+    FastAPI --> ImagesDir
+    FastAPI --> ExportsDir
+    FastAPI --> UploadsDir
+    FastAPI --> FontsDir
+    Mem0 --> Mem0Dir
+    FastAPI --> UserCfg
+    ExportRT --> ExportsDir
+
+    FastAPI -.async.-> WebhookConsumer
+
+    classDef storage fill:#fff4e6,stroke:#d99500,color:#000
+    classDef external fill:#e8f5e9,stroke:#2e7d32,color:#000
+    classDef child fill:#fce4ec,stroke:#c2185b,color:#000
+    class SQLite,ExportsDir,ImagesDir,UploadsDir,FontsDir,Mem0Dir,UserCfg storage
+    class OpenAI,ImgProviders,ExtAgent,Browser,WebhookConsumer external
+    class LiteParse,ExportRT,LibreOffice child

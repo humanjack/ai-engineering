@@ -1,0 +1,74 @@
+%% Presenton — slide-aware chat assistant
+%% services/chat/ — system prompt + 12 tools + dual memory + schema-retry edit loop
+
+graph TB
+    User[/User message in editor<br/>"add a chart to slide 4"/]
+
+    subgraph Service["PresentationChatService (services/chat/service.py)"]
+        BuildPrompt[Build system prompt<br/>services/chat/prompts.py]
+        Hydrate[Hydrate context]
+        ChatLoop[Tool-using LLM loop<br/>via llmai stream]
+    end
+
+    subgraph Memory["Dual memory"]
+        DeckMem[(Deck memory<br/>mem0 + FastEmbed BM25<br/>+ spaCy lemmas<br/>user_id=presentation:&lt;uuid&gt;)]
+        ChatMem[(Chat memory<br/>sqlite chat_history_messages<br/>per conversation_id)]
+    end
+
+    subgraph Tools["12 tools — ChatTools.get_tool_definitions()"]
+        T1[getPresentationOutline]
+        T2[searchSlides]
+        T3[getSlideAtIndex]
+        T4[getAvailableLayouts]
+        T5[getContentSchemaFromLayoutId]
+        T6[getPresentationThemeCatalog]
+        T7[generateAssets <br/>— batch images + icons]
+        T8[generateImage]
+        T9[generateIcon]
+        T10[saveSlide <br/>— schema-validated]
+        T11[deleteSlide]
+        T12[setPresentationTheme]
+    end
+
+    subgraph Backends["Live state behind the tools"]
+        SQL[(SQLite — live slides)]
+        Imgs[ImageGenerationService]
+        Icns[IconFinderService]
+    end
+
+    User --> BuildPrompt
+    BuildPrompt --> Hydrate
+    Hydrate <-->|search snippets| DeckMem
+    Hydrate <-->|prior turns| ChatMem
+    Hydrate --> ChatLoop
+
+    ChatLoop -->|tool_calls| Tools
+    T1 --> SQL
+    T2 --> SQL
+    T3 --> SQL
+    T4 --> SQL
+    T5 --> SQL
+    T6 --> SQL
+    T7 --> Imgs
+    T7 --> Icns
+    T8 --> Imgs
+    T9 --> Icns
+    T10 --> SQL
+    T11 --> SQL
+    T12 --> SQL
+
+    T10 -.->|"{ saved:false,<br/> validation_errors }"| ChatLoop
+    ChatLoop -.->|"system-prompt policy:<br/>shorten strings, retry<br/>(not stop)"| T10
+
+    ChatLoop -->|"assistant message<br/>+ tool_calls trace"| User
+    ChatLoop --> ChatMem
+
+    note["System-prompt policy highlights:<br/>• tool output &gt; conversation &gt; deck memory &gt; assumptions<br/>• 0-based tool indices, 1-based user indices<br/>• always validate layout schema before saveSlide<br/>• retry shortened content on maxLength failure<br/>• never end turn mid-job — keep saving until done<br/>• default-act on edit requests; ask only when blocked"]
+    BuildPrompt -.-> note
+
+    classDef tool fill:#e3f2fd,stroke:#1565c0,color:#000
+    classDef store fill:#fff4e6,stroke:#d99500,color:#000
+    classDef policy fill:#f3e5f5,stroke:#6a1b9a,color:#000
+    class T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,T12 tool
+    class DeckMem,ChatMem,SQL store
+    class note policy

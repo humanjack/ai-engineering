@@ -1,0 +1,83 @@
+%% Presenton — POST /api/v1/ppt/presentation/generate
+%% Two-pass LLM (outline → structure → content) with batched parallel slides + overlapped assets
+
+sequenceDiagram
+    autonumber
+    actor User
+    participant API as FastAPI<br/>generate_presentation_handler
+    participant DOCS as DocumentsLoader<br/>(LiteParse + OCR)
+    participant MEM as mem0<br/>presentation:<id>
+    participant LLM as llmai client<br/>(configured provider)
+    participant LAYOUT as get_layout_by_name<br/>(Next /api/template — parses TSX)
+    participant IMG as ImageGenerationService
+    participant ICN as IconFinderService<br/>(FastEmbed)
+    participant DB as SQLite
+    participant EXP as Node export runtime<br/>(Puppeteer / pptxgenjs)
+
+    User->>API: POST /generate<br/>{ content, n_slides, template,<br/> files?, tone, verbosity,<br/> include_title_slide,<br/> include_table_of_contents,<br/> web_search, export_as }
+
+    Note over API: 1. Validate
+    API->>API: check_if_api_request_is_valid()<br/>n_slides ≤ 50, template exists
+
+    alt files were uploaded
+        Note over API,DOCS: 2. Extract text
+        API->>DOCS: load_documents(files)
+        DOCS-->>API: "\n\n".join(documents)
+    end
+
+    Note over API,MEM: 3. Persist generation context
+    API->>MEM: store_generation_context<br/>(source, instructions,<br/> system+user prompts, doc text)
+
+    Note over API,LLM: 4. Outline pass (streaming structured JSON)
+    API->>LLM: stream outline<br/>JSONSchema(n_slides slides)<br/>+ optional WebSearchTool
+    LLM-->>API: { title, slides:[{title, content}, …] }
+
+    API->>MEM: store_generated_outlines(outlines)
+
+    Note over API,LAYOUT: 5. Load layout (parse TSX → JSON Schema)
+    API->>LAYOUT: get_layout_by_name(template)
+    LAYOUT-->>API: PresentationLayoutModel<br/>[SlideLayoutModel{<br/> id, name, description,<br/> json_schema, react_component}…]
+
+    Note over API,LLM: 6. Structure pass — layout per slide
+    alt layout.ordered = true (e.g. pitch-deck)
+        API->>API: layout.to_presentation_structure()
+    else layout.ordered = false (default)
+        API->>LLM: rank layouts vs outlines<br/>(returns [0,3,5,2,…])
+        LLM-->>API: PresentationStructureModel
+    end
+
+    Note over API: 7. TOC slot injection (if requested)<br/>+ random fallback for out-of-range indices
+
+    Note over API,IMG: 8 & 9. Batched parallel slides — content + assets overlap
+    loop batches of 10
+        par per-slide content (parallel)
+            API->>LLM: structured content<br/>(layout schema + __speaker_note__)<br/>+ schema-retry on validation errors
+            LLM-->>API: { title, …, __image_prompt__,<br/>  __icon_query__, __speaker_note__ }
+        end
+
+        Note over API: build SlideModel objects (in-memory)
+
+        par asset fetching (overlapped with next batch's LLM calls)
+            API->>IMG: generate_image(prompt)
+            IMG-->>API: ImageAsset (saved to /app_data/images)<br/>or stock URL<br/>or placeholder.jpg
+        and
+            API->>ICN: search_icons(query, weight)
+            ICN-->>API: phosphor icon URL<br/>or placeholder.svg
+        end
+        Note over API: __image_url__ / __icon_url__<br/>written back into slide.content tree
+    end
+
+    Note over API,DB: persist
+    API->>DB: insert PresentationModel + slides[] + image_assets[]
+    API-->>User: (async only) status updates via /status/{task_id}
+
+    Note over API,EXP: 10. Export pipeline
+    API->>EXP: spawn node index.cjs<br/>stdin: { type:"export",<br/>  url:/pdf-maker?id=<id>,<br/>  format, title,<br/>  cookieHeader }
+    EXP->>API: (re-fetch slide data through nginx<br/>/app_data/images public,<br/>/app_data/exports gated by session)
+    EXP-->>API: { path: /app_data/exports/<title>.<ext> }
+
+    API->>MEM: (no further writes)
+    API-->>User: { presentation_id,<br/>  path, edit_path }
+
+    Note over API: 11. Async + webhook fan-out
+    API-)WebhookConsumer: WebhookEvent.PRESENTATION_GENERATION_COMPLETED
