@@ -311,7 +311,74 @@ flowchart TB
   </section>
 
   <section>
-    <h2>11 · Strengths & Tradeoffs</h2>
+    <h2>11 · LLM Integration — Vercel AI SDK + 19 Providers</h2>
+    <p>OpenCode is the only agent in this series built on a <b>meta-SDK</b>. Every model call goes through <a href="https://sdk.vercel.ai/"><code>ai</code></a> (Vercel AI SDK) via <code>streamText</code>, with <b>nineteen</b> provider packages pre-wired in <code>package.json</code>.</p>
+
+    <h3>11.1 · The Stack</h3>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TB
+    Session["<b>session/prompt.ts</b><br/><span style='font-size:12px;color:#475569'>explicit while(true) loop<br/>stopWhen: stepCountIs(1)<br/>maxRetries: 0 — OpenCode handles retries</span>"]
+    Plugin["<b>Plugin hook: chat.params</b><br/><span style='font-size:12px;color:#475569'>plugins can mutate request<br/>before it hits the LLM</span>"]
+    SDK["<b>streamText (Vercel ai)</b><br/><span style='font-size:12px;color:#475569'>experimental_repairToolCall · activeTools<br/>providerOptions · messages · system</span>"]
+    Providers["<b>@ai-sdk/* providers (19)</b><br/><span style='font-size:12px;color:#475569'>anthropic · openai · openai-compatible<br/>alibaba · bedrock · azure · cerebras · cohere<br/>deepinfra · google · vertex · groq · mistral<br/>perplexity · togetherai · vercel · xai<br/>+ openrouter · gitlab · venice · gateway</span>"]
+    Wire[(Provider API)]
+    Session --> Plugin --> SDK --> Providers --> Wire
+    classDef s fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#1e1b4b
+    classDef p fill:#fef3c7,stroke:#a16207,stroke-width:2px,color:#422006
+    classDef sdk fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#052e16
+    classDef pr fill:#ede9fe,stroke:#6d28d9,stroke-width:2px,color:#2e1065
+    classDef w fill:#fce7f3,stroke:#be185d,stroke-width:2px,color:#500724
+    class Session s
+    class Plugin p
+    class SDK sdk
+    class Providers pr
+    class Wire w
+      </div>
+    </div>
+
+    <h3>11.2 · Specialties</h3>
+    <ul>
+      <li><b>Vercel AI SDK as the LLM abstraction.</b> 19 <code>@ai-sdk/*</code> packages in <a href="https://github.com/sst/opencode/blob/v1.0.0/packages/opencode/package.json"><code>packages/opencode/package.json</code></a> — anthropic, openai, openai-compatible, alibaba, amazon-bedrock, azure, cerebras, cohere, deepinfra, google, google-vertex, groq, mistral, perplexity, togetherai, vercel, xai + openrouter / gitlab / venice / gateway</li>
+      <li><b>One-step-at-a-time loop.</b> <code>stopWhen: stepCountIs(1)</code> surrenders the SDK's built-in agentic loop so OpenCode can run shadow-git snapshots, plugin hooks, and tool dispatches between every model step</li>
+      <li><b>Manual retry.</b> <code>maxRetries: 0</code> in <code>streamText</code> means OpenCode controls all retries itself — they live in <code>SessionRetry</code> with exponential backoff outside the AI-SDK loop</li>
+      <li><b>Auto-fix tool-call typos.</b> <code>experimental_repairToolCall</code> handler retries with <code>toolName.toLowerCase()</code> if the model emits the wrong case (model says <code>Read</code> instead of <code>read</code>) — falls back to an <code>"invalid"</code> tool that surfaces the error to the model on the next turn</li>
+      <li><b>OpenCode Gateway provider.</b> <code>@ai-sdk/gateway</code> + custom <code>x-opencode-session</code> and <code>x-opencode-request</code> headers — OpenCode's hosted gateway can do request-level routing, caching, observability without changing the client</li>
+      <li><b>Provider-specific transforms.</b> <code>ProviderTransform.maxOutputTokens(...)</code> and <code>ProviderTransform.providerOptions(...)</code> in <code>packages/opencode/src/provider/transform.ts</code> normalise per-provider quirks (max output token caps, reasoning controls, etc.)</li>
+      <li><b>Per-model system prompts.</b> Codex-trained models get a Codex-specific header; Claude models get a different one. Selection lives in <code>session/system.ts</code></li>
+      <li><b>Provider-supplied <code>npm</code> field.</b> The model object carries the provider's npm package name so <code>providerOptions</code> can be looked up per-provider — keeps provider-specific config out of the loop</li>
+    </ul>
+
+    <h3>11.3 · The streamText Call</h3>
+<pre><code>// packages/opencode/src/session/prompt.ts (v1.0.0, ~line 250)
+streamText({
+  async experimental_repairToolCall(input) {
+    const lower = input.toolCall.toolName.toLowerCase()
+    if (lower !== input.toolCall.toolName &amp;&amp; tools[lower]) {
+      return { ...input.toolCall, toolName: lower }
+    }
+    return { ...input.toolCall, toolName: "invalid",
+      input: JSON.stringify({ tool: input.toolCall.toolName,
+                              error: input.error.message }) }
+  },
+  headers: { ...(model.providerID === "opencode" ? {
+    "x-opencode-session": input.sessionID,
+    "x-opencode-request": userMsg.info.id,
+  } : undefined), ...model.info.headers },
+  maxRetries: 0,                       // OpenCode handles retries
+  activeTools: Object.keys(tools).filter(x =&gt; x !== "invalid"),
+  maxOutputTokens: ProviderTransform.maxOutputTokens(...),
+  abortSignal: abort.signal,
+  providerOptions: ProviderTransform.providerOptions(...),
+  stopWhen: stepCountIs(1),            // we drive the loop
+  messages: [...system.map(x =&gt; ({role:"system", content:x})),
+             ...MessageV2.toModelMessage(msgs)],
+})</code></pre>
+    <p>Net effect: OpenCode gets every new provider Vercel adds for free (Vercel ships them as separate packages), while OpenCode keeps the agent loop, snapshots, plugin hooks, and retry logic <i>outside</i> the SDK — the SDK is reduced to one job: stream one model step.</p>
+  </section>
+
+  <section>
+    <h2>12 · Strengths & Tradeoffs</h2>
     <div class="cards">
       <div class="card">
         <div class="icon">💪</div>
@@ -339,7 +406,7 @@ flowchart TB
   </section>
 
   <section>
-    <h2>12 · Two OpenCodes — Mind the Lineage</h2>
+    <h2>13 · Two OpenCodes — Mind the Lineage</h2>
     <table class="matrix">
       <thead><tr><th>Repo</th><th>Language</th><th>Status</th><th>Notes</th></tr></thead>
       <tbody>
@@ -351,7 +418,7 @@ flowchart TB
   </section>
 
   <section>
-    <h2>13 · Further Reading</h2>
+    <h2>14 · Further Reading</h2>
     <ul>
       <li><a href="https://github.com/sst/opencode">sst/opencode</a></li>
       <li><a href="https://github.com/opencode-ai/opencode">opencode-ai/opencode (archived)</a></li>
