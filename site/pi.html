@@ -308,7 +308,69 @@ flowchart TB
   </section>
 
   <section>
-    <h2>9 · Strengths & Tradeoffs</h2>
+    <h2>9 · LLM Integration — The pi-ai Layer</h2>
+    <p>Pi rolls its own LLM SDK called <a href="https://github.com/badlogic/pi-mono/tree/main/packages/ai"><code>pi-ai</code></a> (published as <code>@earendil-works/pi-ai</code>). It is <b>not</b> a wrapper around LangChain, LiteLLM, or any other meta-SDK — it sits directly on top of each provider's official client and normalises them into a single streaming interface.</p>
+
+    <h3>9.1 · The Stack</h3>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TB
+    Agent["<b>agent-core</b><br/><span style='font-size:12px;color:#475569'>Calls streamSimple(model, context, options)</span>"]
+    PiAi["<b>pi-ai · stream() / complete()</b><br/><span style='font-size:12px;color:#475569'>Unified entry · routes by model.api<br/>13 providers · JSON-repair · surrogate sanitise<br/>Cache retention (short/long/none)</span>"]
+    Reg["<b>api-registry · provider modules</b><br/><span style='font-size:12px;color:#475569'>anthropic · openai-responses · openai-completions<br/>openai-codex-responses · google · google-vertex<br/>azure-openai-responses · amazon-bedrock · mistral · cloudflare</span>"]
+    SDKs["<b>Official provider SDKs (pinned)</b><br/><span style='font-size:12px;color:#475569'>@anthropic-ai/sdk 0.91 · openai 6.26<br/>@google/genai 1.52 · @mistralai/mistralai 2.2<br/>@aws-sdk/client-bedrock-runtime 3.1048</span>"]
+    Wire[(LLM Provider API)]
+    Agent --> PiAi --> Reg --> SDKs --> Wire
+    classDef ag fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#1e1b4b
+    classDef ai fill:#fef3c7,stroke:#a16207,stroke-width:2px,color:#422006
+    classDef reg fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#052e16
+    classDef sdk fill:#ede9fe,stroke:#6d28d9,stroke-width:2px,color:#2e1065
+    classDef w fill:#fce7f3,stroke:#be185d,stroke-width:2px,color:#500724
+    class Agent ag
+    class PiAi ai
+    class Reg reg
+    class SDKs sdk
+    class Wire w
+      </div>
+    </div>
+
+    <h3>9.2 · Specialties</h3>
+    <ul>
+      <li><b>Provider-routed via <code>model.api</code>.</b> The unified <code>stream(model, context, options)</code> in <code class="code-ref">packages/ai/src/stream.ts</code> calls <code>getApiProvider(model.api)</code> and delegates — no dynamic <code>if (provider==='anthropic')</code> branching</li>
+      <li><b>Official SDKs underneath, not raw HTTP.</b> Each provider module imports the vendor SDK (e.g. <code>import Anthropic from "@anthropic-ai/sdk"</code>) and translates Pi's internal <code>Context</code> shape to the SDK's request schema</li>
+      <li><b>13 provider modules, 1 import.</b> <code>register-builtins.ts</code> registers every provider at startup; agent code only ever sees <code>stream()</code> / <code>complete()</code> / <code>streamSimple()</code></li>
+      <li><b>Two API shapes for OpenAI</b> — <code>openai-completions</code> (legacy chat completions) AND <code>openai-responses</code> (newer Responses API) — plus <code>openai-codex-responses</code> for ChatGPT-backend Codex compatibility</li>
+      <li><b>Cache retention as first-class config.</b> <code>PI_CACHE_RETENTION=short|long|none</code> selects Anthropic ephemeral-vs-1h cache control; the same model attribute is honoured everywhere</li>
+      <li><b>Hardened JSON parsing.</b> <code>parseJsonWithRepair</code>, <code>parseStreamingJson</code>, and <code>sanitizeSurrogates</code> sit in <code>packages/ai/src/utils/</code> for malformed tool-call arguments and bad UTF-16 from weak models</li>
+      <li><b>Cross-provider Context portability.</b> Sessions store an LLM-agnostic <code>Context</code> — a Claude session can resume on GPT-5 because <code>transform-messages.ts</code> normalises the shape per-API at the boundary</li>
+      <li><b>Bedrock via Anthropic + AWS SDK.</b> <code>amazon-bedrock</code> uses both <code>@aws-sdk/client-bedrock-runtime</code> AND patterns from the Anthropic SDK — same prompt cache discipline as native Anthropic</li>
+    </ul>
+
+    <h3>9.3 · The Glue Code</h3>
+<pre><code>// packages/ai/src/stream.ts
+export function stream&lt;TApi extends Api&gt;(
+  model: Model&lt;TApi&gt;,
+  context: Context,
+  options?: ProviderStreamOptions,
+): AssistantMessageEventStream {
+  const provider = resolveApiProvider(model.api);
+  return provider.stream(model, context, options as StreamOptions);
+}
+
+// packages/ai/src/providers/anthropic.ts (head)
+import Anthropic from "@anthropic-ai/sdk";
+import type {
+  CacheControlEphemeral,
+  ContentBlockParam,
+  MessageCreateParamsStreaming,
+  RawMessageStreamEvent,
+} from "@anthropic-ai/sdk/resources/messages.js";
+// ... own translator from Pi Context → Anthropic MessageCreateParams</code></pre>
+    <p>Net effect: Pi gets the reliability of official vendor SDKs (so new provider features ship within hours of the official SDK update) plus a tiny stable interface for the agent core.</p>
+  </section>
+
+  <section>
+    <h2>10 · Strengths & Tradeoffs</h2>
     <div class="cards">
       <div class="card">
         <div class="icon">🧬</div>
@@ -334,7 +396,7 @@ flowchart TB
   </section>
 
   <section>
-    <h2>10 · When to Choose Pi</h2>
+    <h2>11 · When to Choose Pi</h2>
     <ul>
       <li>You want to <b>own</b> your agent's behavior end-to-end</li>
       <li>You're comfortable in TypeScript and prefer an extension API to a plugin marketplace</li>
@@ -345,7 +407,7 @@ flowchart TB
   </section>
 
   <section>
-    <h2>11 · Further Reading</h2>
+    <h2>12 · Further Reading</h2>
     <ul>
       <li><a href="https://lucumr.pocoo.org/2026/1/31/pi/">Pi blog post — Armin Ronacher</a></li>
       <li><a href="https://github.com/badlogic/pi-mono">pi-mono on GitHub</a></li>
