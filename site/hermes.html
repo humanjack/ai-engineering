@@ -325,7 +325,68 @@ flowchart TB
   </section>
 
   <section>
-    <h2>10 · Strengths & Tradeoffs</h2>
+    <h2>10 · LLM Integration — Five Adapters, No Meta-SDK</h2>
+    <p>Hermes is one of the most LLM-portable harnesses in public source. It does <b>not</b> use LangChain, LiteLLM, or any meta-SDK — it wraps the official Python SDKs (<code>openai</code>, <code>anthropic</code>) directly behind <b>five hand-written adapter modules</b>, dispatched by an <code>api_mode</code> resolution chain.</p>
+
+    <h3>10.1 · The Stack</h3>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TB
+    Agent["<b>AIAgent.run_conversation</b><br/><span style='font-size:12px;color:#475569'>builds OpenAI-canonical messages<br/>resolves api_mode (explicit > provider > base-URL host > default)</span>"]
+    Dispatch{"<b>api_mode dispatch</b>"}
+    A1["<b>chat_completions</b><br/><span style='font-size:12px;color:#475569'>uses openai==2.24.0<br/>any OpenAI-compatible endpoint<br/>(OpenRouter, Novita, Ollama, LM Studio, …)</span>"]
+    A2["<b>anthropic_messages</b><br/><span style='font-size:12px;color:#475569'>uses anthropic==0.86.0 (lazy-loaded extra)<br/>x-api-key · OAuth setup-token · Claude Code creds</span>"]
+    A3["<b>codex_responses</b><br/><span style='font-size:12px;color:#475569'>uses openai SDK Responses API<br/>+ codex_responses_adapter.py translator</span>"]
+    A4["<b>bedrock_converse</b><br/><span style='font-size:12px;color:#475569'>uses anthropic Bedrock client<br/>+ bedrock_adapter.py</span>"]
+    A5["<b>codex_app_server</b><br/><span style='font-size:12px;color:#475569'>subprocess hand-off to Codex CLI<br/>for terminal/file/patch ops</span>"]
+    Repair["<b>JSON-repair pipeline</b><br/><span style='font-size:12px;color:#475569'>~200 LOC at run_agent.py:751-958<br/>_repair_tool_call_arguments<br/>_sanitize_messages_surrogates · XML strip</span>"]
+    Wire[(Provider API)]
+    Agent --> Dispatch
+    Dispatch --> A1
+    Dispatch --> A2
+    Dispatch --> A3
+    Dispatch --> A4
+    Dispatch --> A5
+    A1 & A2 & A3 & A4 & A5 --> Repair --> Wire
+    classDef ag fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#1e1b4b
+    classDef d fill:#fef3c7,stroke:#a16207,stroke-width:2px,color:#422006
+    classDef ad fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#052e16
+    classDef r fill:#ede9fe,stroke:#6d28d9,stroke-width:2px,color:#2e1065
+    classDef w fill:#fce7f3,stroke:#be185d,stroke-width:2px,color:#500724
+    class Agent ag
+    class Dispatch d
+    class A1,A2,A3,A4,A5 ad
+    class Repair r
+    class Wire w
+      </div>
+    </div>
+
+    <h3>10.2 · Specialties</h3>
+    <ul>
+      <li><b>Five API modes, one internal format.</b> Hermes stores messages as OpenAI-canonical <code>{role, content, tool_calls, tool_call_id}</code> internally; each adapter translates to/from that shape only at the wire (e.g. <code>codex_responses_adapter.py</code>, <code>anthropic_adapter.py</code>)</li>
+      <li><b>No LiteLLM, no LangChain.</b> Direct dependency on <code>openai==2.24.0</code>; <code>anthropic==0.86.0</code> ships as an optional extra and is <b>lazy-loaded</b> on first use (saves ~220 ms cold start)</li>
+      <li><b>Exact-pinned versions for supply-chain safety.</b> Every direct dep is <code>==X.Y.Z</code> — a deliberate hardening after the mistralai 2.4.6 supply-chain attack (May 2026). Tightened in <code>pyproject.toml:2026-05-12</code></li>
+      <li><b>Three Anthropic auth modes in one adapter</b> — regular API keys, OAuth setup-tokens (Bearer + beta header), and Claude Code credentials from <code>~/.claude.json</code> or macOS Keychain</li>
+      <li><b>Defensive XML stripping</b> — open models sometimes emit <code>&lt;tool_call&gt;</code>, <code>&lt;thinking&gt;</code>, or <code>&lt;function_call&gt;</code> in prose. <code>_strip_think_blocks</code> at <code>run_agent.py:3706-3798</code> removes them before parsing the structured channel</li>
+      <li><b>JSON repair pipeline.</b> <code>_repair_tool_call_arguments</code>, <code>_escape_invalid_chars_in_json_strings</code>, <code>_sanitize_messages_surrogates</code> keep weak open models afloat — without these, Hermes wouldn't be able to support 8+ provider families</li>
+      <li><b>Per-provider quirk methods.</b> <code>_qwen_prepare_chat_messages</code>, <code>_check_openrouter_cache_status</code>, <code>_decorate_xai_entitlement_error</code>, etc. — every "provider X needs special handling" gets its own method on <code>AIAgent</code></li>
+      <li><b>Provider plugins under <code>plugins/model-providers/</code></b> add backends without touching core: OpenRouter, NovitaAI, GMI, Xiaomi MiMo, z.ai/GLM, Kimi/Moonshot, MiniMax, Hugging Face, Microsoft Copilot, Google Code Assist, Gemini-native</li>
+    </ul>
+
+    <h3>10.3 · api_mode Resolution</h3>
+<pre><code># run_agent.py:1289-1330 (paraphrased)
+# api_mode = explicit > provider > base-URL hostname > default
+if explicit_api_mode:        return explicit_api_mode
+if provider == "anthropic":  return "anthropic_messages"
+if provider in {"openai-codex", "xai", "xai-oauth"}: return "codex_responses"
+if base_url_host_matches(CHATGPT_BACKEND_HOSTS):    return "codex_responses"
+if provider == "bedrock":    return "bedrock_converse"
+return "chat_completions"   # default — works for OpenAI, OpenRouter, Ollama, LM Studio, …</code></pre>
+    <p>The headline trick: <b>brand decoupling</b>. Despite the name "Hermes Agent", the default model is <code>anthropic/claude-opus-4.6</code> and the runtime <i>warns</i> if you point it at actual Hermes-3/4 chat models (<code>hermes_cli/model_switch.py:60-91</code>) — they lack the tool-calling fidelity the loop requires.</p>
+  </section>
+
+  <section>
+    <h2>11 · Strengths & Tradeoffs</h2>
     <div class="cards">
       <div class="card">
         <div class="icon">💪</div>
@@ -351,7 +412,7 @@ flowchart TB
   </section>
 
   <section>
-    <h2>11 · Key Takeaways</h2>
+    <h2>12 · Key Takeaways</h2>
     <ol>
       <li><b>Engineering &gt; Novelty.</b> "Shipping an agent" is mostly retries, surrogates, JSON repair, dead-connection cleanup, and provider quirks.</li>
       <li><b>Cache discipline pays</b> — frozen-snapshot system prompts + user-message context injection + auxiliary-model curator.</li>
