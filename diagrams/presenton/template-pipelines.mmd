@@ -1,0 +1,60 @@
+%% Presenton — two directions through the layout system
+%% (a) TSX layout is the LLM contract  (b) PPTX → TSX layout via vision LLM
+
+flowchart LR
+    subgraph DefaultDir["Built-in templates"]
+        TSX1[".tsx file<br/>servers/nextjs/app/<br/>presentation-templates/general/<br/>BasicInfoSlideLayout.tsx"]
+        ZodSchema["Zod schema<br/>+ React component<br/>+ layoutId/Name/Description"]
+        SettingsJSON["settings.json<br/>{ ordered, icon_weight, default }"]
+    end
+
+    NextAPI[Next /api/template?group=general<br/>esbuild/Babel parse TSX<br/>→ extract Zod export<br/>→ convert to JSON Schema]
+
+    LayoutModel["PresentationLayoutModel<br/>{ name, ordered, icon_weight,<br/>  slides: [SlideLayoutModel{<br/>    id, name, description,<br/>    json_schema,<br/>    react_component }]}"]
+
+    subgraph GenPipeline["Generation pipeline"]
+        Outline[Outline LLM<br/>generate_ppt_outline]
+        Structure[Structure LLM<br/>generate_presentation_structure<br/>(ranks slide→layout idx)]
+        Content[Slide content LLM<br/>get_slide_content_from_<br/>type_and_outline<br/>response_format = json_schema]
+    end
+
+    Editor["Next.js editor<br/>renders TSX component<br/>with content as props"]
+    Export["headless /pdf-maker<br/>renders SAME TSX<br/>→ Puppeteer prints"]
+    PPTXOut["pptxgenjs PPTX renderer<br/>(reads slide.content + schema)"]
+
+    TSX1 -->|export Schema, layoutId, …| ZodSchema
+    SettingsJSON --> NextAPI
+    ZodSchema --> NextAPI
+    NextAPI --> LayoutModel
+
+    LayoutModel --> Structure
+    Outline --> Structure
+    Structure -->|layout_idx per slide| Content
+    LayoutModel -->|json_schema for chosen layout| Content
+    Content -->|slide.content matching schema| Editor
+    Content --> Export
+    Content --> PPTXOut
+
+    %% reverse pipeline: PPTX → TSX
+    subgraph ReverseDir["AI template generation"]
+        PptxUpload[/User uploads .pptx/]
+        Libre[LibreOffice headless<br/>soffice --convert-to png]
+        SlideImgs[slide_N.png images]
+        VisionLLM["Vision LLM<br/>SLIDE_LAYOUT_<br/>CREATION_SYSTEM_PROMPT<br/>(~100-line rulebook)"]
+        GenTSX["Generated TSX:<br/>• Zod Schema with describe/max/default<br/>• layoutId/Name/Description<br/>• dynamicSlideLayout component<br/>• 1280×720, flex/grid only (no absolute)<br/>• __image_prompt__ / __icon_query__ placeholders<br/>• recharts for graphs"]
+        CodeDB[(PresentationLayoutCodeModel<br/>keyed by template UUID)]
+    end
+
+    PptxUpload --> Libre --> SlideImgs --> VisionLLM
+    VisionLLM --> GenTSX
+    GenTSX --> CodeDB
+    CodeDB -.template = "custom-&lt;uuid&gt;".-> LayoutModel
+
+    classDef tsxbox fill:#fff9c4,stroke:#9e9d24,color:#000
+    classDef llmbox fill:#e3f2fd,stroke:#1565c0,color:#000
+    classDef render fill:#e8f5e9,stroke:#2e7d32,color:#000
+    classDef store fill:#fff4e6,stroke:#d99500,color:#000
+    class TSX1,ZodSchema,GenTSX tsxbox
+    class Outline,Structure,Content,VisionLLM,NextAPI llmbox
+    class Editor,Export,PPTXOut render
+    class CodeDB,SettingsJSON,LayoutModel store
