@@ -283,7 +283,134 @@ A nuance: the **trajectory format on disk is XML** (`<tool_call>`/`<tool_respons
 
 ---
 
-## 12. Key Takeaways for AI Engineers
+## 12. Deep Dive — Tool Use
+
+Hermes's tool system is the most maximalist in the series: 80+ tools, three API surfaces, seven terminal backends, all unified by a single registry. The trick is **AST-based auto-discovery** — any `.py` file in `tools/` that calls `registry.register()` at module level is found, imported, and dispatchable. No manifest, no decorator, no plugin.json.
+
+### 12.1 · Plain-dict schemas, central registry
+
+A tool is three things ([tools/registry.py:77-107](https://github.com/NousResearch/hermes-agent/blob/main/tools/registry.py#L77)):
+
+```python
+READ_FILE_SCHEMA = {"name": "read_file", "description": "...", "parameters": {...}}
+
+def _handle_read_file(args, **kwargs): ...
+
+registry.register(
+    name="read_file", toolset="file", schema=READ_FILE_SCHEMA,
+    handler=_handle_read_file, check_fn=_check_file_reqs,
+    emoji="📖", max_result_size_chars=100_000,
+)
+```
+
+No Pydantic. No dataclass. Just OpenAI-format JSON dicts wrapped by `ToolEntry` ([:77-107](https://github.com/NousResearch/hermes-agent/blob/main/tools/registry.py#L77)). `dynamic_schema_overrides` lets a tool mutate its own description at `get_definitions()` time — used by `delegate_task` to reflect the current `max_concurrent_children` value.
+
+### 12.2 · AST discovery
+
+The discovery walk ([tools/registry.py:42-74](https://github.com/NousResearch/hermes-agent/blob/main/tools/registry.py#L42)):
+
+```python
+def _module_registers_tools(module_path: Path) -> bool:
+    tree = ast.parse(module_path.read_text())
+    return any(_is_registry_register_call(stmt) for stmt in tree.body)
+
+def discover_builtin_tools(tools_dir=None) -> List[str]:
+    for path in tools_path.glob("*.py"):
+        if _module_registers_tools(path):     # ← AST check, no import yet
+            importlib.import_module(...)      # ← triggers registry.register()
+```
+
+The AST pre-check matters: import-time side effects only run for files that actually self-register, so adding a `.py` file with helper code (no `registry.register()`) doesn't bloat the registry.
+
+### 12.3 · Single dispatcher, sync/async bridged
+
+`registry.dispatch()` ([:390-416](https://github.com/NousResearch/hermes-agent/blob/main/tools/registry.py#L390)) is the only entry point:
+
+```python
+def dispatch(self, name: str, args: dict, **kwargs) -> str:
+    entry = self.get_entry(name)
+    if not entry:
+        return json.dumps({"error": f"Unknown tool: {name}"})
+    try:
+        if entry.is_async:
+            return _run_async(entry.handler(args, **kwargs))    # bridge to event loop
+        return entry.handler(args, **kwargs)
+    except Exception as e:
+        return json.dumps({"error": _sanitize_tool_error(...)})
+```
+
+All exceptions become JSON `{"error": …}` and are sanitized to strip framing tokens before reaching the model.
+
+### 12.4 · Three API modes, one schema
+
+The same dict is serialized three ways at send time ([run_agent.py:2576-2625, 3283-3310](https://github.com/NousResearch/hermes-agent/blob/main/run_agent.py)):
+
+| Mode | Wrap |
+|---|---|
+| `chat_completions` (OpenAI) | `{"type": "function", "function": schema}` |
+| `anthropic_messages` | passthrough — Anthropic SDK accepts same JSON Schema |
+| `codex_responses` (xAI / OpenAI Codex legacy) | legacy `functions: [...]` or function-wrapped |
+
+`get_definitions()` ([:337-384](https://github.com/NousResearch/hermes-agent/blob/main/tools/registry.py#L337)) is the single source of truth; per-mode adapters (`agent/codex_responses_adapter.py`) just wrap.
+
+### 12.5 · Seven terminal backends
+
+`TERMINAL_ENV` selects one of [`tools/environments/*.py`](https://github.com/NousResearch/hermes-agent/tree/main/tools/environments): `local`, `docker`, `ssh`, `singularity`, `modal`, `daytona`, `vercel_sandbox`. The `terminal` tool routes a single command through whichever backend is active ([terminal_tool.py:205-250](https://github.com/NousResearch/hermes-agent/blob/main/tools/terminal_tool.py#L205)). Hermes itself enforces only path scoping ([path_security.py](https://github.com/NousResearch/hermes-agent/blob/main/tools/path_security.py)), a device blocklist ([file_tools.py:69-78](https://github.com/NousResearch/hermes-agent/blob/main/tools/file_tools.py#L69)), and dangerous-command approval ([approval.py](https://github.com/NousResearch/hermes-agent/blob/main/tools/approval.py)); container isolation is the backend's job.
+
+### 12.6 · Three-layer result defense
+
+Hermes is the most disciplined in the series about tool-result blowup ([tools/tool_result_storage.py](https://github.com/NousResearch/hermes-agent/blob/main/tools/tool_result_storage.py)):
+
+1. **Per-tool cap** — `max_result_size_chars` on each `ToolEntry`
+2. **Per-result spill** — if exceeded, full text written to `/tmp/hermes-results/{tool_use_id}.txt`; model gets `(preview, has_more=True, path)`
+3. **Per-turn aggregate budget** — after all tool results in one turn, if total > `MAX_TURN_BUDGET_CHARS` (200 K), the largest non-persisted results spill too
+
+The preview cuts at the last newline in the truncation window to avoid mid-line breaks:
+
+```python
+truncated = content[:max_chars]
+last_nl = truncated.rfind("\n")
+if last_nl > max_chars // 2:
+    truncated = truncated[:last_nl + 1]
+```
+
+### 12.7 · MCP both ways
+
+Outbound: `tools/mcp_tool.py:MCPServerTask` polls each connected MCP server and dynamically registers its tools under `toolset="mcp-{server_name}"`. Inbound: `mcp_serve.py` exposes Hermes's own registry as an MCP server. OAuth refresh and 401 handling live in `tools/mcp_oauth_manager.py`.
+
+### 12.8 · `delegate_task` — isolated children, shared budget
+
+`tools/delegate_tool.py` spawns child `AIAgent` instances with:
+
+- A restricted toolset — `DELEGATE_BLOCKED_TOOLS` ([:45-53](https://github.com/NousResearch/hermes-agent/blob/main/tools/delegate_tool.py#L45)) forbids `delegate_task` (no recursion), `clarify`, `memory`, `send_message`, `execute_code`
+- A shared `IterationBudget` and module-level `_active_agents` dict
+- A separate approval callback installed via `ThreadPoolExecutor(initializer=…)` so dangerous-command prompts don't deadlock the parent TUI
+- Config limits: `delegation.max_concurrent_children` (default 3), `max_spawn_depth` (default 1, max 3)
+
+### 12.9 · The system prompt is frozen — todos are not
+
+The system prompt is built once at session start ([agent/system_prompt.py](https://github.com/NousResearch/hermes-agent/blob/main/agent/system_prompt.py)) and invalidated **only** on toolset / skill / config changes. Tool handlers never mutate it. After compression, the todo list (`TodoStore`) is re-injected into **message history**, not into the system prompt, preserving the prompt-cache window. This is the cache discipline OpenClaw codified and Codex relies on the Responses API for.
+
+```mermaid
+flowchart LR
+    F[tools/*.py file] -->|registry.register at top level| AST[AST walk<br/>at startup]
+    AST -->|import| REG[(ToolRegistry)]
+    M[Model returns tool_call] --> D[registry.dispatch]
+    D --> RUN{is_async?}
+    RUN -- yes --> A[asyncio bridge]
+    RUN -- no --> S[Direct call]
+    A --> RES[result]
+    S --> RES
+    RES --> CAP{size > cap?}
+    CAP -- yes --> SPILL[Spill to /tmp/hermes-results]
+    CAP -- no --> OK[Return inline]
+    SPILL --> MODEL[Model sees preview + path]
+    OK --> MODEL
+```
+
+---
+
+## 13. Key Takeaways for AI Engineers
 
 1. **Engineering > Novelty.** Hermes proves that "shipping an agent" is mostly retries, surrogates, JSON repair, dead-connection cleanup, and provider quirks — not new agent science.
 2. **Cache discipline pays.** Frozen-snapshot system prompts + user-message context injection + auxiliary-model curator = real cost wins.

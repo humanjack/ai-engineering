@@ -219,6 +219,85 @@ flowchart TD
   </section>
 
   <section>
+    <h2>Deep Dive — Tool Use Across the Six</h2>
+    <p>Each agent doc has a full "Deep Dive — Tool Use" section grounded in upstream code. This is the synthesis: where the six converge, where they diverge, and which tradeoffs each made.</p>
+
+    <h3>Tool definition format</h3>
+    <table>
+      <thead><tr><th>Agent</th><th>Schema library</th><th>Provider translation</th></tr></thead>
+      <tbody>
+        <tr><td><b>Pi</b></td><td>TypeBox</td><td>None — TypeBox is JSON Schema; passed verbatim</td></tr>
+        <tr><td><b>OpenClaw</b></td><td>TypeBox (from Pi)</td><td>None</td></tr>
+        <tr><td><b>Hermes</b></td><td>Plain Python dicts</td><td>Per-mode wrapping: <code>{type:"function",function:…}</code> / passthrough / legacy <code>functions:[…]</code></td></tr>
+        <tr><td><b>OpenCode</b></td><td>Effect Schema (not Zod)</td><td><code>ProviderTransform.schema()</code> per provider</td></tr>
+        <tr><td><b>Deep Agents</b></td><td>LangChain <code>BaseTool</code> (Pydantic)</td><td>LangChain handles per-provider</td></tr>
+        <tr><td><b>Codex</b></td><td>Rust struct + <code>JsonSchema</code></td><td>MCP tools get schema masking via <code>tool_with_model_visible_input_schema</code></td></tr>
+      </tbody>
+    </table>
+    <p><b>Pattern:</b> JSON Schema is the universal lingua franca. The only real translator is OpenCode (Effect → JSON per provider). Codex is the only one that <i>masks</i> parts of an MCP tool's schema from the model.</p>
+
+    <h3>Permission / approval — five distinct strategies</h3>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart LR
+    OS["<b>Codex</b><br/><span style='font-size:12px;color:#475569'>OS sandbox: bwrap+seccomp+Landlock /<br/>Seatbelt / AppContainer<br/>+ Starlark execpolicy<br/>+ approval profile<br/>+ PreToolUse hook</span>"]
+    AST["<b>OpenCode</b><br/><span style='font-size:12px;color:#475569'>tree-sitter bash AST<br/>+ arity-prefix matching<br/>+ inline ctx.ask()</span>"]
+    REGEX["<b>Hermes</b><br/><span style='font-size:12px;color:#475569'>regex pattern set<br/>+ per-session approval cache</span>"]
+    HOOK["<b>OpenClaw</b><br/><span style='font-size:12px;color:#475569'>before_tool_call hook<br/>+ per-channel allow/deny<br/>+ async approval via gateway</span>"]
+    APP["<b>Pi / Deep Agents</b><br/><span style='font-size:12px;color:#475569'>App-level callback /<br/>HumanInTheLoopMiddleware</span>"]
+    OS --- AST --- REGEX --- HOOK --- APP
+    classDef o fill:#fee2e2,stroke:#b91c1c,stroke-width:2px,color:#450a0a
+    classDef a fill:#fef3c7,stroke:#a16207,stroke-width:2px,color:#422006
+    classDef r fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#052e16
+    classDef h fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#1e1b4b
+    classDef p fill:#ede9fe,stroke:#6d28d9,stroke-width:2px,color:#2e1065
+    class OS o
+    class AST a
+    class REGEX r
+    class HOOK h
+    class APP p
+      </div>
+    </div>
+
+    <h3>Tool result post-processing — same problem, six answers</h3>
+    <table>
+      <thead><tr><th>Agent</th><th>Strategy</th></tr></thead>
+      <tbody>
+        <tr><td>Pi</td><td>Per-tool truncation (bash 2000 lines / 50 KB to temp file); core loop doesn't touch results</td></tr>
+        <tr><td>OpenClaw</td><td>Per-result truncation to 8 KB (UTF-16 safe)</td></tr>
+        <tr><td>Hermes</td><td><b>Three-layer defense</b>: per-tool <code>max_result_size_chars</code> → per-result spill to <code>/tmp/hermes-results/{id}</code> → per-turn 200 KB aggregate budget</td></tr>
+        <tr><td>OpenCode</td><td>Tool-output cap 50 KB / 2000 lines → spill to <code>/tmp/.opencode/truncation/tool_&lt;ulid&gt;</code>; then context compaction</td></tr>
+        <tr><td>Deep Agents</td><td>Result &gt; 20 K tokens → offload to <code>/large_tool_results/{id}</code> via same backend; head/tail preview replaces message</td></tr>
+        <tr><td>Codex</td><td>Per-tool <code>max_output_tokens</code> + <code>DEFAULT_OUTPUT_BYTES_CAP</code>; <code>approx_token_count()</code> is model-aware</td></tr>
+      </tbody>
+    </table>
+
+    <h3>The one detail per agent worth stealing</h3>
+    <ul>
+      <li><b>Pi</b> — any single tool with <code>executionMode: "sequential"</code> flips the whole batch to serial. Cheapest possible "this must finish before others" primitive.</li>
+      <li><b>OpenClaw</b> — wrap every tool with one hook at construction; the hook is the policy. "Policy as middleware" without a middleware framework.</li>
+      <li><b>Hermes</b> — AST-walk to find self-registering tool modules. Auto-discovery without an import cost for non-tool files.</li>
+      <li><b>OpenCode</b> — arity dictionary turns <code>git checkout … && rm -rf /</code> into two AST commands. Regex bash permissions can't compete.</li>
+      <li><b>Deep Agents</b> — large tool results offload through the <b>same backend</b> the tool would use. <code>write_file</code> and <code>read_file</code> work on <code>/large_tool_results/{id}</code> automatically.</li>
+      <li><b>Codex</b> — <code>tool_with_model_visible_input_schema</code> masks parts of an MCP tool's schema from the model. Defense-in-depth at the schema, not just at exec.</li>
+    </ul>
+
+    <h3>MCP support matrix</h3>
+    <table>
+      <thead><tr><th>Agent</th><th>Outbound</th><th>Inbound</th><th>Schema masking</th></tr></thead>
+      <tbody>
+        <tr><td>Pi</td><td>Extension only (<code>mcporter</code>)</td><td>—</td><td>—</td></tr>
+        <tr><td>OpenClaw</td><td>✓ (<code>{server}_{name}</code> namespacing)</td><td>Via sub-agent RPC pattern</td><td>—</td></tr>
+        <tr><td>Hermes</td><td>✓ (dynamic registration as <code>mcp-{server}</code> toolsets)</td><td>✓ (<code>mcp_serve.py</code>)</td><td>—</td></tr>
+        <tr><td>OpenCode</td><td>✓ (4 transports)</td><td>—</td><td>—</td></tr>
+        <tr><td>Deep Agents</td><td>Via <code>langchain-mcp-adapters</code></td><td>—</td><td>—</td></tr>
+        <tr><td>Codex</td><td>✓ (<code>codex-mcp/</code>)</td><td>✓ (<code>mcp-server/</code>)</td><td>✓ (file paths masked)</td></tr>
+      </tbody>
+    </table>
+    <p><b>Codex and Hermes are the only "both directions" agents</b> — they can call and be called via MCP.</p>
+  </section>
+
+  <section>
     <h2>Read the Full Deep-Dives</h2>
     <div class="cards">
       <a href="pi.html" class="card"><h4>Pi</h4><p>Minimal self-extending coding agent →</p></a>

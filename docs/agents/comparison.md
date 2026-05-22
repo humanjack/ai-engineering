@@ -244,7 +244,138 @@ Patterns that have become de facto standards:
 
 ---
 
-## 8. Series Index
+## 8. Deep Dive — Tool Use Across the Six
+
+Each agent doc has a full "Deep Dive — Tool Use" section grounded in upstream code. This is the synthesis: where the six converge, where they diverge, and which tradeoffs each made.
+
+### 8.1 · Tool definition format
+
+| Agent | Schema library | Provider translation |
+|---|---|---|
+| **Pi** | TypeBox | None — TypeBox already emits JSON Schema; passed verbatim |
+| **OpenClaw** | TypeBox (inherited from Pi) | None |
+| **Hermes** | Plain Python dicts (OpenAI function-calling shape) | Per-mode wrapping: `{type:"function",function:…}` (chat) / passthrough (Anthropic) / legacy `functions:[…]` (codex_responses) |
+| **OpenCode** | Effect Schema (not Zod) | `ProviderTransform.schema()` produces provider-specific JSON Schema; same canonical form |
+| **Deep Agents** | LangChain `BaseTool` (Pydantic) | LangChain handles per-provider |
+| **Codex** | Rust struct `ToolDefinition` with `JsonSchema` field | Handlers produce a `ToolSpec`; MCP tools get schema masking via `tool_with_model_visible_input_schema` |
+
+**Pattern:** every agent treats JSON Schema as the lowest common denominator. The only one with a real translation layer is OpenCode (Effect → JSON Schema per provider). Codex is the only one that **masks** parts of an MCP tool's schema from the model (e.g., file-path params) — defense-in-depth at the schema layer.
+
+### 8.2 · Tool count and source
+
+| Agent | Built-in | Distinctive composition |
+|---|---|---|
+| Pi | 4 (Read/Write/Edit/Bash) | Custom tools via `pi.registerTool()` in extensions |
+| OpenClaw | 5 layers: Pi core + ~20 OpenClaw + skills + MCP + sub-agents | All wrapped by one `before_tool_call` hook |
+| Hermes | 80+ across 17 toolsets | AST auto-discovery of `tools/*.py` files |
+| OpenCode | 11+ built-ins + custom from `{tool,tools}/*.{js,ts}` + plugin defs | Per-model filtering (`apply_patch` vs `edit` by model family) |
+| Deep Agents | ~11 via middleware (Filesystem, SubAgent, AsyncSubAgent, TodoList) | Composition via `wrap_model_call` injecting tools |
+| Codex | ~15 + MCP | All registered in `spec_plan.rs`; `defer_loading` flag for lazy schemas |
+
+**Pattern:** number of tools is a poor proxy for capability — Pi extends to anything via `pi.registerTool()`, Hermes auto-discovers, Deep Agents composes via middleware. The agents that *look* feature-poor often pay capability in extensions.
+
+### 8.3 · Dispatch model
+
+| Agent | Style | Loop location |
+|---|---|---|
+| Pi | Default-parallel, per-tool `sequential` flag flips batch to serial | [`agent-loop.ts:373`](https://github.com/badlogic/pi-mono/blob/main/packages/agent/src/agent-loop.ts#L373) |
+| OpenClaw | Pi's loop unchanged; tools pre-wrapped with hooks | [`pi-tools.before-tool-call.ts:29`](https://github.com/openclaw/openclaw/blob/main/src/agents/pi-tools.before-tool-call.ts#L29) |
+| Hermes | Centralized `registry.dispatch()` with sync/async bridge | [`tools/registry.py:390-416`](https://github.com/NousResearch/hermes-agent/blob/main/tools/registry.py#L390) |
+| OpenCode | External `while(true)` driving the AI SDK stream | [`prompt.ts:1239-1487`](https://github.com/sst/opencode/blob/dev/packages/opencode/src/session/prompt.ts#L1239) |
+| Deep Agents | `wrap_tool_call(request, handler)` chain | [`middleware/filesystem.py:790-820`](https://github.com/langchain-ai/deepagents/blob/main/libs/deepagents/deepagents/middleware/filesystem.py#L790) |
+| Codex | Trait-based: `ToolRouter::dispatch_any_with_terminal_outcome` | [`registry.rs:326`](https://github.com/openai/codex/blob/main/codex-rs/core/src/tools/registry.rs#L326) |
+
+**Pattern:** **Pi/OpenClaw/Hermes/Codex** all have a single dispatch point (registry lookup + handler). **OpenCode** has an external loop manually driving the SDK. **Deep Agents** has *no* dispatch point — it's a middleware chain by design.
+
+### 8.4 · Permission / approval model
+
+| Agent | Layer | Mechanism |
+|---|---|---|
+| Pi | App-level | `beforeToolCall()` callback; no core gate |
+| OpenClaw | Plugin hook | `before_tool_call` + per-channel `tool-policy.ts` allow/deny + plugin groups |
+| Hermes | Regex-based | `tools/approval.py` dangerous-command patterns + per-session approval cache |
+| OpenCode | Inline `ctx.ask()` + **tree-sitter bash AST + arity dictionary** | The only AST-based bash permission system in the six |
+| Deep Agents | Middleware | `HumanInTheLoopMiddleware` in tail stack; per-tool `excluded_tools` profile |
+| Codex | OS-enforced | Three-layer sandbox (bwrap+seccomp+Landlock / Seatbelt / AppContainer) + Starlark execpolicy + approval profile + PreToolUse hook |
+
+**Pattern:** the spread here is wider than anywhere else. **Codex enforces with the OS**; **OpenCode enforces with AST parsing**; **Hermes uses regex**; **Pi/Deep Agents/OpenClaw delegate to higher layers**. If you care about untrusted-model safety, Codex > OpenCode > Hermes > everyone else.
+
+### 8.5 · Sandboxing / isolation
+
+| Agent | Isolation backend |
+|---|---|
+| Pi | None — runs in-process |
+| OpenClaw | Per-session Docker / SSH / OpenShell, selected at session spawn |
+| Hermes | 7 terminal backends: local, Docker, SSH, Singularity, Modal, Daytona, Vercel Sandbox |
+| OpenCode | None at the OS level — defers to AST permission checks |
+| Deep Agents | Pluggable `BackendProtocol`: StateBackend / FilesystemBackend / Runloop / Daytona / Modal |
+| Codex | OS-enforced per call: bwrap+seccomp+Landlock (Linux) / Seatbelt (macOS) / AppContainer (Windows) |
+
+**Pattern:** two distinct strategies — **OS-enforced** (Codex) vs **backend-delegated** (Hermes, Deep Agents, OpenClaw). OpenCode chose neither and bets on AST parsing being good enough. Pi runs everything in-process.
+
+### 8.6 · Tool result post-processing — same problem, six answers
+
+| Agent | Strategy |
+|---|---|
+| Pi | Per-tool truncation (bash: last 2000 lines / 50 KB to a temp file); core loop doesn't touch results |
+| OpenClaw | Per-result truncation to 8 KB ([pi-embedded-subscribe.tools.ts:17-40](https://github.com/openclaw/openclaw/blob/main/src/agents/pi-embedded-subscribe.tools.ts#L17)); UTF-16-safe |
+| Hermes | **Three-layer defense**: per-tool `max_result_size_chars` → per-result spill to `/tmp/hermes-results/{id}.txt` → per-turn aggregate budget (200 K) |
+| OpenCode | Two-tier: tool-output cap 50 KB / 2000 lines, spilled to `/tmp/.opencode/truncation/tool_<ulid>`; then context compaction |
+| Deep Agents | Result > 20 K tokens → offload to `/large_tool_results/{id}` via same backend; head/tail preview replaces message |
+| Codex | Per-tool `max_output_tokens`; `approx_token_count()` token-aware; `DEFAULT_OUTPUT_BYTES_CAP` fallback |
+
+**Pattern:** every agent except Pi truncates somewhere. The most disciplined is **Hermes** (three independent layers). The most elegant is **Deep Agents** (same backend stores results and offloads — `read_file` retrieves the spill). OpenCode hints the model toward `grep`/`task` instead of just truncating.
+
+### 8.7 · MCP
+
+| Agent | Outbound | Inbound | Schema masking |
+|---|---|---|---|
+| Pi | Extension only (`mcporter`) | — | — |
+| OpenClaw | ✓ (`materializeBundleMcpToolsForRun`, `{server}_{name}` namespacing) | Sub-agent RPC pattern instead | — |
+| Hermes | ✓ (`MCPServerTask` polling + dynamic registration as `mcp-{server}` toolsets) | ✓ (`mcp_serve.py`) | — |
+| OpenCode | ✓ (stdio / HTTP / SSE / registry transports) | — | — |
+| Deep Agents | Via `langchain-mcp-adapters` in `deepagents_code` CLI | — | — |
+| Codex | ✓ (`codex-mcp/`) | ✓ (`mcp-server/`) | ✓ (`tool_with_model_visible_input_schema` masks file paths) |
+
+**Codex and Hermes are the only "both directions"** agents — they can call and be called via MCP.
+
+### 8.8 · Sub-agents as tools
+
+| Agent | Tool name | Async? | Distinctive |
+|---|---|---|---|
+| Pi | `pi-subagents` community extension | — | — |
+| OpenClaw | `sessions_spawn` / `sessions_send` / `sessions_yield` | Yes (resumable session mode + ACP runtime) | Channel-aware: child can deliver back to original chat |
+| Hermes | `delegate_task` | Sync, parallel via `ThreadPoolExecutor` | Shared `IterationBudget`, depth/concurrency caps, blocked-tool list |
+| OpenCode | `task` (+ `task_status` for background) | Both | Permissions derived via `deriveSubagentSessionPermission` |
+| Deep Agents | `task` + `launch_task`/`get_task_result`/`list_tasks`/`cancel_task` | Both | Declarative TypedDict spec; ephemeral; fully isolated middleware stack |
+| Codex | `spawn_agent`/`send_message`/`wait_agent`/`close_agent`/`list_agents` | Yes (mailboxes) | First-class registry, `UntilTerminal` token + timeout, same event protocol as UIs |
+
+**Pattern:** **Codex** treats sub-agents as fully first-class (mailbox, registry, lifecycle events). **Deep Agents** treats them as ephemeral parallel ToolNodes. **Hermes** budget-shares with the parent. **OpenClaw** keeps the channel context.
+
+### 8.9 · The one detail per agent worth stealing
+
+- **Pi** — `executionMode: "sequential"` on any tool flips the whole batch to serial. Cheapest possible "this thing must finish before others start" primitive.
+- **OpenClaw** — wrap every tool with one hook at construction; the hook is the policy. Codifies "policy as middleware" without needing a middleware framework.
+- **Hermes** — AST-walk to find self-registering tool modules. Auto-discovery without an import cost for non-tool files.
+- **OpenCode** — arity dictionary turns "`git checkout … && rm -rf /`" into two AST commands, not one substring. Regex-based bash permissions can't compete.
+- **Deep Agents** — large tool results offload through the **same backend** the tool would use. `write_file` and `read_file` work on `/large_tool_results/{id}` automatically.
+- **Codex** — `tool_with_model_visible_input_schema` masks parts of an MCP tool's schema from the model. Defense-in-depth at the schema, not just at exec.
+
+```mermaid
+flowchart TD
+    subgraph Strategy[Approval Strategy Spectrum]
+        OS[Codex: OS sandbox]
+        AST[OpenCode: AST + arity]
+        REGEX[Hermes: regex patterns]
+        HOOK[OpenClaw: channel policy hook]
+        APP[Pi / Deep Agents: app-level]
+    end
+    OS --- AST --- REGEX --- HOOK --- APP
+```
+
+---
+
+## 9. Series Index
 
 - [Pi](pi.md) · [OpenClaw](openclaw.md) · [Hermes](hermes.md) · [OpenCode](opencode.md) · [Deep Agents](deepagents.md) · [Codex CLI](codex.md)
 - [Series umbrella issue](https://github.com/humanjack/ai-engineering/issues/51)

@@ -308,6 +308,88 @@ flowchart TB
   </section>
 
   <section>
+    <h2>Deep Dive II · Tool Use</h2>
+    <p>Pi's tool system is the smallest in the series — and on purpose. Four built-ins, TypeBox schemas pumped straight to providers, default-parallel dispatch, no approval gate in the core. Everything else lives in extensions.</p>
+
+    <h3>D2.1 · TypeBox → JSON Schema → provider, no translator</h3>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart LR
+    Tool["<b>AgentTool&lt;TParameters&gt;</b><br/><span style='font-size:12px;color:#475569'>packages/agent/src/types.ts:361<br/>name · description · parameters (TSchema) · execute · executionMode?</span>"]
+    TB["<b>TypeBox TSchema</b><br/><span style='font-size:12px;color:#475569'>already valid JSON Schema</span>"]
+    OAI["OpenAI Responses<br/><span style='font-size:12px;color:#475569'>passthrough</span>"]
+    AN["Anthropic<br/><span style='font-size:12px;color:#475569'>passthrough</span>"]
+    GG["Google<br/><span style='font-size:12px;color:#475569'>sanitizeForOpenApi()</span>"]
+    Val["<b>Validation</b><br/><span style='font-size:12px;color:#475569'>TypeBox Compile() + Value.Convert()<br/>(coerces strings→numbers)</span>"]
+    Tool --> TB --> OAI
+    TB --> AN
+    TB --> GG
+    Tool --> Val
+    classDef t fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#1e1b4b
+    classDef tb fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#052e16
+    classDef p fill:#fef3c7,stroke:#a16207,stroke-width:2px,color:#422006
+    classDef v fill:#fce7f3,stroke:#be185d,stroke-width:2px,color:#500724
+    class Tool t
+    class TB tb
+    class OAI p
+    class AN p
+    class GG p
+    class Val v
+      </div>
+    </div>
+    <ul>
+      <li><b>No translator layer</b> — TypeBox emits JSON Schema natively; the OpenAI / Anthropic / Google providers consume it verbatim (see <code>openai-responses-shared.ts:274</code>)</li>
+      <li><b>4 default tools</b> live in <code>coding-agent</code>, not the agent core — <code>read</code>, <code>write</code>, <code>edit</code>, <code>bash</code>; everything else is an extension</li>
+      <li><b>Bash specifics</b> — streams via <code>onData</code> with 100 ms throttle; truncates to last 2000 lines / 50 KB and spills full output to a temp file</li>
+    </ul>
+
+    <h3>D2.2 · Dispatch loop — small, default-parallel</h3>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TB
+    Stream["<b>streamAssistantResponse</b><br/><span style='font-size:12px;color:#475569'>agent-loop.ts:275</span>"]
+    Filter["<b>Filter content type=toolCall</b><br/><span style='font-size:12px;color:#475569'>agent-loop.ts:203</span>"]
+    Mode{"<b>Any tool with executionMode=sequential?</b>"}
+    Seq["<b>Sequential</b><br/><span style='font-size:12px;color:#475569'>for each: prepare → execute → result</span>"]
+    Par["<b>Parallel (default)</b><br/><span style='font-size:12px;color:#475569'>Promise.all; results reassembled<br/>in source order at line 502</span>"]
+    Hook["<b>beforeToolCall hook (app-level)</b><br/><span style='font-size:12px;color:#475569'>types.ts:262; called at agent-loop.ts:581<br/>{block:true, reason} aborts</span>"]
+    Res["<b>ToolResultMessages</b>"]
+    Term{"<b>All results terminate=true?</b><br/><span style='font-size:12px;color:#475569'>agent-loop.ts:544</span>"}
+    Stream --> Filter --> Mode
+    Mode -- "yes" --> Seq
+    Mode -- "no" --> Par
+    Seq --> Hook --> Res
+    Par --> Hook
+    Res --> Term
+    Term -- "yes" --> End[End turn]
+    Term -- "no" --> Stream
+    classDef s fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#1e1b4b
+    classDef m fill:#fef3c7,stroke:#a16207,stroke-width:2px,color:#422006
+    classDef p fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#052e16
+    classDef h fill:#ede9fe,stroke:#6d28d9,stroke-width:2px,color:#2e1065
+    classDef r fill:#fce7f3,stroke:#be185d,stroke-width:2px,color:#500724
+    classDef e fill:#fee2e2,stroke:#b91c1c,stroke-width:2px,color:#450a0a
+    class Stream s
+    class Filter s
+    class Mode m
+    class Seq p
+    class Par p
+    class Hook h
+    class Res r
+    class Term m
+    class End e
+      </div>
+    </div>
+    <ul>
+      <li><b>Default is parallel</b> — <code>types.ts:252</code>; any single tool with <code>executionMode: "sequential"</code> flips the whole batch to serial (a cheap "this must finish before others" primitive)</li>
+      <li><b>No approval gate in core</b> — all registered tools auto-run; the app layers policy via the <code>beforeToolCall()</code> callback. OpenClaw uses this to wire per-channel approval</li>
+      <li><b>Steering doesn't interrupt in-flight tools</b> — <code>getSteeringMessages()</code> is called after the current batch finishes (agent-loop.ts:253). Real interruption is the <code>AbortSignal</code> threaded into every <code>execute()</code></li>
+      <li><b>MCP is not in the core</b> — extensions wire it by calling <code>pi.registerTool()</code> per remote tool</li>
+      <li><b>3 streaming events per call</b> — <code>tool_execution_start</code> → <code>tool_execution_update</code> (when the tool calls <code>onUpdate(partial)</code>) → <code>tool_execution_end</code></li>
+    </ul>
+  </section>
+
+  <section>
     <h2>9 · LLM Integration — The pi-ai Layer</h2>
     <p>Pi rolls its own LLM SDK called <a href="https://github.com/badlogic/pi-mono/tree/main/packages/ai"><code>pi-ai</code></a> (published as <code>@earendil-works/pi-ai</code>). It is <b>not</b> a wrapper around LangChain, LiteLLM, or any other meta-SDK — it sits directly on top of each provider's official client and normalises them into a single streaming interface.</p>
 

@@ -329,7 +329,134 @@ Internal tests: `libs/deepagents/tests/` covers middleware ordering, summarizati
 
 ---
 
-## 14. Key Takeaways
+## 14. Deep Dive — Tool Use
+
+Deep Agents inherits LangChain's `BaseTool` and `create_agent` foundations, but the interesting part is *what middleware does around tool calls*: result eviction, summarization, filtering, and sub-agent dispatch all run through `wrap_tool_call()`.
+
+### 14.1 · `wrap_tool_call` is the contract
+
+The universal middleware hook ([middleware/filesystem.py:18-20](https://github.com/langchain-ai/deepagents/blob/main/libs/deepagents/deepagents/middleware/filesystem.py#L18)):
+
+```python
+def wrap_tool_call(
+    self,
+    request: ToolCallRequest,
+    handler: Callable[[ToolCallRequest], ToolMessage | Command],
+) -> ToolMessage | Command:
+```
+
+Linear composition: `M1.wrap_tool_call → M2.wrap_tool_call → … → actual execute`. Each middleware can short-circuit (skip the handler), mutate the request, or post-process the result.
+
+`wrap_model_call` is the symmetric hook on the model side. Together they cover every interception point a harness might want — no separate ToolNode, no separate router.
+
+### 14.2 · The ~11 built-ins, grouped by middleware
+
+| Middleware | Tools | Source |
+|---|---|---|
+| `FilesystemMiddleware` | `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`, `execute` (if backend supports it) | [filesystem.py:336-445](https://github.com/langchain-ai/deepagents/blob/main/libs/deepagents/deepagents/middleware/filesystem.py#L336) |
+| `SubAgentMiddleware` | `task` | [subagents.py:200-250](https://github.com/langchain-ai/deepagents/blob/main/libs/deepagents/deepagents/middleware/subagents.py#L200) |
+| `AsyncSubAgentMiddleware` | `launch_task`, `get_task_result`, `list_tasks`, `cancel_task` | [async_subagents.py:150-350](https://github.com/langchain-ai/deepagents/blob/main/libs/deepagents/deepagents/middleware/async_subagents.py#L150) |
+| LangChain `TodoListMiddleware` | `write_todos` | imported, not in this repo |
+| `_ToolExclusionMiddleware` | (filter) | runs at tail, drops tools listed in `HarnessProfile.excluded_tools` |
+
+Tools are injected into `ModelRequest.tools` via `wrap_model_call`, **then filtered**. This means user `tools=[…]` and middleware-provided tools merge transparently from the agent's perspective.
+
+### 14.3 · Backend-routed file ops
+
+Every file tool delegates to a `BackendProtocol` ([backends/protocol.py:100-500](https://github.com/langchain-ai/deepagents/blob/main/libs/deepagents/deepagents/backends/protocol.py#L100)):
+
+```python
+class BackendProtocol(ABC):
+    async def aread(self, path) -> ReadResult
+    async def awrite(self, path, content) -> WriteResult
+    async def als(self, path) -> list[FileInfo]
+    async def aexecute(self, command, timeout=None) -> ExecuteResult   # SandboxBackendProtocol only
+```
+
+Concrete backends:
+- **StateBackend** — in-memory dict, default ([graph.py:520](https://github.com/langchain-ai/deepagents/blob/main/libs/deepagents/deepagents/graph.py#L520))
+- **FilesystemBackend** — real disk
+- **CompositeBackend** — path-prefix routing, e.g. `/sandbox/* → Runloop`, `/ → FileSystem` ([backends/composite.py](https://github.com/langchain-ai/deepagents/blob/main/libs/deepagents/deepagents/backends/composite.py))
+- **SandboxBackendProtocol** — marker interface enabling `execute` (Runloop, Daytona, Modal)
+
+The same `write_file` call hits a real VM, a remote dev environment, or a Python dict depending on the backend bound at agent construction — tools never know.
+
+### 14.4 · The 20 K eviction trick
+
+The most-cited Deep Agents pattern. When `wrap_tool_call` sees a tool result over `_tool_token_limit_before_evict` (~20 K tokens), `_offload_tool_message_content()` ([_message_eviction.py:119-142](https://github.com/langchain-ai/deepagents/blob/main/libs/deepagents/deepagents/middleware/_message_eviction.py#L119)) writes the full text to `/large_tool_results/{sanitized_tool_call_id}` via the same backend, and replaces the message with:
+
+> *Tool result was too large. The full content has been saved to `/large_tool_results/<id>`.*
+> *Preview (first 5 lines + … + last 5 lines):*
+> *…*
+
+The agent can still inspect the result through `read_file(file_path="/large_tool_results/<id>", offset=…, limit=…)`. Storage and tool I/O share the same backend — eviction in Runloop goes to a Runloop file, eviction in StateBackend goes to a dict entry. Same code path.
+
+`_create_content_preview()` ([:37-63](https://github.com/langchain-ai/deepagents/blob/main/libs/deepagents/deepagents/middleware/_message_eviction.py#L37)) builds the head/tail with line numbers and caps individual lines at 1000 chars.
+
+### 14.5 · Context overflow → summarize, not error
+
+`_DeepAgentsSummarizationMiddleware` ([summarization.py](https://github.com/langchain-ai/deepagents/blob/main/libs/deepagents/deepagents/middleware/summarization.py)) catches `ContextOverflowError` and calls `_clip_overflow_tail()` ([_overflow_clip.py:1-150](https://github.com/langchain-ai/deepagents/blob/main/libs/deepagents/deepagents/middleware/_overflow_clip.py)) which trims the trailing `ToolMessage` batch by either:
+
+- truncating large `read_file` results in place (head + tail with path reference), or
+- offloading other large results to `/large_tool_results/` (same mechanism as §14.4)
+
+Then it re-invokes the model with a "summarize this conversation" prompt. Tool-arg truncation isn't an explicit middleware — Pydantic validation rejects oversized inputs at the schema layer, and overflow triggers reactively.
+
+### 14.6 · Sub-agents are declarative
+
+A subagent is a TypedDict ([subagents.py:27-115](https://github.com/langchain-ai/deepagents/blob/main/libs/deepagents/deepagents/middleware/subagents.py#L27)):
+
+```python
+{
+    "name": "research",
+    "description": "Researches and summarizes topics",
+    "system_prompt": "You are a research expert...",
+    "model": "openai:gpt-5.5",       # optional; inherits parent
+    "tools": [...],                   # optional; inherits parent tools
+    "middleware": [...],              # optional custom stack
+    "skills": [...],                  # optional skill paths
+    "permissions": [...],
+}
+```
+
+At construction time, `create_deep_agent` builds a fresh middleware stack for each subagent ([graph.py:548-611](https://github.com/langchain-ai/deepagents/blob/main/libs/deepagents/deepagents/graph.py#L548)) — TodoList → Filesystem → Summarization → PatchToolCalls → (optional Skills + user middleware) → profile → exclusion → prompt-caching. The subagent is compiled via `create_agent()` and exposed through the `task` tool.
+
+Subagents are **ephemeral and parallelizable** — each `task()` call gets a fresh context window. No state shared with the parent except the return value.
+
+### 14.7 · Skills are not tools
+
+`SkillsMiddleware` ([skills.py:99-150](https://github.com/langchain-ai/deepagents/blob/main/libs/deepagents/deepagents/middleware/skills.py#L99)) appends markdown skill content to the system prompt as progressive disclosure — the model decides when to use them. Layered sources mean later definitions override earlier ones with the same skill name. Paths use POSIX conventions so the same skill file works under any backend.
+
+### 14.8 · Model + tool schema = LangChain's problem
+
+`resolve_model()` ([_models.py:15-36](https://github.com/langchain-ai/deepagents/blob/main/libs/deepagents/deepagents/_models.py#L15)) takes `"provider:model"` strings and routes through `init_chat_model()`. Provider profiles ([profiles/provider/provider_profiles.py](https://github.com/langchain-ai/deepagents/blob/main/libs/deepagents/deepagents/profiles/provider/provider_profiles.py)) apply provider-specific defaults (Responses API, OpenRouter app attribution, etc.). Schema translation is **entirely LangChain's responsibility** — Deep Agents never sees provider-specific tool JSON.
+
+```mermaid
+flowchart TD
+    M[Model returns tool_call] --> R[Middleware stack<br/>wrap_tool_call chain]
+    R --> M1[TodoList]
+    M1 --> M2[Filesystem]
+    M2 --> M3[Summarization]
+    M3 --> M4[SubAgent]
+    M4 --> M5[User middleware]
+    M5 --> M6[Exclusion]
+    M6 --> T[Tool execute<br/>via backend]
+    T --> BACKEND{Backend}
+    BACKEND --> ST[StateBackend dict]
+    BACKEND --> FS[Local filesystem]
+    BACKEND --> RL[Runloop / Daytona / Modal]
+    ST --> RES[Result]
+    FS --> RES
+    RL --> RES
+    RES --> CHECK{>20k tokens?}
+    CHECK -- yes --> EV[Offload to /large_tool_results/&lt;id&gt;<br/>via same backend]
+    CHECK -- no --> M
+    EV --> M
+```
+
+---
+
+## 15. Key Takeaways
 
 1. **Middleware as the universal extension point** — every capability composes via the same hooks
 2. **Context engineering is multi-layered** — five techniques cooperating beats any single trick

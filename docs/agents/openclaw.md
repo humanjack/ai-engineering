@@ -265,7 +265,96 @@ Inter-persona communication is **not** an agent hierarchy — explicitly listed 
 
 ---
 
-## 13. Key Takeaways
+## 13. Deep Dive — Tool Use
+
+OpenClaw inherits Pi's `AgentTool` shape unchanged but wraps every tool — Pi's defaults plus ~20 OpenClaw built-ins plus inbound MCP tools — with a single hook at construction. That wrapper is the policy point for the whole runtime.
+
+### 13.1 · The 5-layer stack, where it's wired
+
+Tool composition is concentrated in `createOpenClawTools()` ([src/agents/openclaw-tools.ts:70-162](https://github.com/openclaw/openclaw/blob/main/src/agents/openclaw-tools.ts)). The five layers are wired in order:
+
+| # | Layer | Site | Examples |
+|---|---|---|---|
+| 1 | Pi core (4) | imported from `@earendil-works/pi-agent-core` ([pi-embedded-subscribe.tools.ts:2](https://github.com/openclaw/openclaw/blob/main/src/agents/pi-embedded-subscribe.tools.ts)) | `read`, `write`, `edit`, `bash` |
+| 2 | OpenClaw built-ins (~20) | `openclaw-tools.ts:373-474` | `nodes`, `cron`, `message`, `gateway`, `sessions_*`, `web_search`, `tts`, `image_generate`, `update_plan` |
+| 3 | Skills | `src/agents/skills.ts:31-38` | Skills are **not standalone tools** — they get disclosed in the prompt and run through `nodes` (shell) |
+| 4 | MCP inbound | `materializeBundleMcpToolsForRun()` ([pi-bundle-mcp-materialize.ts:65-148](https://github.com/openclaw/openclaw/blob/main/src/agents/pi-bundle-mcp-materialize.ts#L65)) | Tools named `{server}_{name}` to avoid collisions ([:99-109](https://github.com/openclaw/openclaw/blob/main/src/agents/pi-bundle-mcp-materialize.ts#L99)) |
+| 5 | Sub-agents | `sessions_spawn`, `sessions_send`, `sessions_yield` ([sessions-spawn-tool.ts:246-500](https://github.com/openclaw/openclaw/blob/main/src/agents/tools/sessions-spawn-tool.ts#L246)) | Spawn modes `"run"` (one-shot) or `"session"` (resumable); runtimes `"subagent"` or `"acp"` |
+
+### 13.2 · The single wrapper — `wrapToolWithBeforeToolCallHook`
+
+Every tool, regardless of layer, is wrapped at registration time ([pi-tools.before-tool-call.ts:29](https://github.com/openclaw/openclaw/blob/main/src/agents/pi-tools.before-tool-call.ts#L29)). Pi's loop runs unchanged; the wrapper does five things synchronously before delegating to the original `execute()`:
+
+1. Fire `before_tool_call` plugin hook ([:95-170](https://github.com/openclaw/openclaw/blob/main/src/agents/pi-tools.before-tool-call.ts#L95)) — can mutate params in place ([:155-166](https://github.com/openclaw/openclaw/blob/main/src/agents/pi-tools.before-tool-call.ts#L155))
+2. Veto via `BeforeToolCallBlockedError` ([:111-115](https://github.com/openclaw/openclaw/blob/main/src/agents/pi-tools.before-tool-call.ts#L111))
+3. Resolve `allow`/`deny` policy ([tool-policy.ts:13-220](https://github.com/openclaw/openclaw/blob/main/src/agents/tool-policy.ts)) — supports `group:plugins` and per-plugin groups, expanded by `expandPluginGroups()` ([:130-156](https://github.com/openclaw/openclaw/blob/main/src/agents/tool-policy.ts#L130))
+4. Optionally raise an **asynchronous approval request** ([:183-410](https://github.com/openclaw/openclaw/blob/main/src/agents/pi-tools.before-tool-call.ts#L183)) — used for per-channel policies where the user approves from WhatsApp, Slack, etc.
+5. Inject channel delivery context ([openclaw-tools.ts:186-191, 304-317](https://github.com/openclaw/openclaw/blob/main/src/agents/openclaw-tools.ts#L186)) and `senderIsOwner` ([:120](https://github.com/openclaw/openclaw/blob/main/src/agents/openclaw-tools.ts#L120))
+
+After the tool returns, an `after_tool_call` hook fires, and results pass through truncation ([pi-embedded-subscribe.tools.ts:17-40](https://github.com/openclaw/openclaw/blob/main/src/agents/pi-embedded-subscribe.tools.ts#L17)):
+
+```typescript
+const TOOL_RESULT_MAX_CHARS = 8000;
+function truncateToolText(text: string): string {
+  if (text.length <= TOOL_RESULT_MAX_CHARS) return text;
+  return `${truncateUtf16Safe(text, TOOL_RESULT_MAX_CHARS)}\n…(truncated)…`;
+}
+```
+
+There is **no per-result TTL cache** — the `openclaw.cache-ttl` markers in the comparison doc apply to prompt-cache discipline (system prompt / message stack), not to tool results.
+
+### 13.3 · Per-session sandbox: Docker / SSH / OpenShell
+
+The `nodes` tool (shell execution) routes through a per-session `SandboxContext`:
+
+- Factory: `getSandboxBackendFactory()` ([sandbox.ts:14-50](https://github.com/openclaw/openclaw/blob/main/src/agents/sandbox.ts#L14)) returns Docker (default), SSH, or in-process OpenShell
+- Workspace mount: `ensureSandboxWorkspaceForSession()` ([:13](https://github.com/openclaw/openclaw/blob/main/src/agents/sandbox.ts#L13))
+- Path translation: `SandboxFsBridge` ([:36](https://github.com/openclaw/openclaw/blob/main/src/agents/sandbox.ts#L36)) mediates host ↔ container paths
+- Policy gate: `resolveSandboxToolPolicyForAgent()` ([:35](https://github.com/openclaw/openclaw/blob/main/src/agents/sandbox.ts#L35)) + `applyNodesToolWorkspaceGuard()` ([openclaw-tools.ts:330-335](https://github.com/openclaw/openclaw/blob/main/src/agents/openclaw-tools.ts#L330))
+- Pluggable: `registerSandboxBackend()` lets runtime plugins add backends
+
+Sandboxing is **per-session** rather than per-tool — a session spawned with `runtime: "subagent"` gets its own container; the main session runs locally by default unless reconfigured.
+
+### 13.4 · `update_plan` is opt-in
+
+The Codex-style `update_plan` tool is conditionally constructed ([openclaw-tools.ts:360-372](https://github.com/openclaw/openclaw/blob/main/src/agents/openclaw-tools.ts#L360)):
+
+```typescript
+const includeUpdatePlanTool =
+  isToolExplicitlyAllowedByFactoryPolicy({ toolName: "update_plan", ... }) ||
+  isUpdatePlanToolEnabledForOpenClawTools({ config, agentSessionKey, agentId, modelProvider, modelId });
+```
+
+Validation enforces at-most-one `in_progress` step and returns structured `details` ([update-plan-tool.ts:76-97](https://github.com/openclaw/openclaw/blob/main/src/agents/tools/update-plan-tool.ts#L76)). It has no side effects on Pi's turn loop — the model just gets visibility into its own plan.
+
+### 13.5 · Failover happens at run scope
+
+When a model fails mid-tool (rate-limit, overload, auth), OpenClaw's classifier ([pi-embedded-runner/result-fallback-classifier.ts](https://github.com/openclaw/openclaw/blob/main/src/agents/pi-embedded-runner/result-fallback-classifier.ts)) triggers `runWithModelFallback()` ([model-fallback.ts](https://github.com/openclaw/openclaw/blob/main/src/agents/model-fallback.ts)) which **restarts the whole turn** with the fallback model. Codex's per-call retry semantics are not present — failover is coarser-grained on purpose, to keep prompt-cache windows aligned.
+
+```mermaid
+flowchart TD
+    Tools[Tool list assembled<br/>Pi core + built-ins + MCP + sub-agents]
+    Wrap[Wrapper: before_tool_call hook<br/>policy / approval / channel ctx]
+    Pi[Pi loop runs unchanged]
+    Sandbox{Tool uses nodes?}
+    Docker[Docker container<br/>per session]
+    SSH[SSH host<br/>per session]
+    Open[OpenShell<br/>in-process]
+    Result[Result → truncate 8 KB<br/>→ after_tool_call hook]
+
+    Tools --> Wrap --> Pi --> Sandbox
+    Sandbox -- yes --> Docker
+    Sandbox -- yes --> SSH
+    Sandbox -- yes --> Open
+    Docker --> Result
+    SSH --> Result
+    Open --> Result
+    Sandbox -- no --> Result
+```
+
+---
+
+## 14. Key Takeaways
 
 1. **Embedding > forking** — OpenClaw stays compatible with upstream Pi by using its SDK, not patching it
 2. **Cache discipline is engineering** — codified in `AGENTS.md`, enforced via transcript-level cache TTL markers and deterministic ordering rules
