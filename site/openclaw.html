@@ -283,7 +283,66 @@ flowchart TB
   </section>
 
   <section>
-    <h2>9 · Strengths & Tradeoffs</h2>
+    <h2>9 · LLM Integration — Pi-ai + Per-Provider Plugins</h2>
+    <p>OpenClaw doesn't ship its own LLM SDK. Every call to a model goes through Pi's <code>pi-ai</code> package (see the <a href="pi.html">Pi page</a> for that internal layer). On top, OpenClaw adds <b>per-provider plugins</b>, <b>auth profile rotation</b>, and <b>provider-specific cache-TTL eligibility</b> rules — the operational concerns Pi-ai doesn't try to solve.</p>
+
+    <h3>9.1 · The Stack</h3>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TB
+    Sess["<b>Pi session</b><br/><span style='font-size:12px;color:#475569'>uses pi-ai stream() under the hood</span>"]
+    Resolve["<b>Model resolution</b><br/><span style='font-size:12px;color:#475569'>OpenClaw model registry · per-persona overrides<br/>auth profile rotation + failover</span>"]
+    Plugins["<b>Provider plugins (extensions/)</b><br/><span style='font-size:12px;color:#475569'>anthropic · openai · google · openrouter<br/>kilocode · z-ai-glm · groq · cerebras · …</span>"]
+    CacheTTL["<b>openclaw.cache-ttl entries</b><br/><span style='font-size:12px;color:#475569'>custom transcript entry type<br/>isCacheTtlEligibleProvider() decides per-model</span>"]
+    PiAI["<b>pi-ai</b><br/><span style='font-size:12px;color:#475569'>(Pi's unified LLM SDK)</span>"]
+    Wire[(Provider API)]
+    Sess --> Resolve --> Plugins --> CacheTTL --> PiAI --> Wire
+    classDef s fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#1e1b4b
+    classDef r fill:#fef3c7,stroke:#a16207,stroke-width:2px,color:#422006
+    classDef p fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#052e16
+    classDef c fill:#ede9fe,stroke:#6d28d9,stroke-width:2px,color:#2e1065
+    classDef ai fill:#fce7f3,stroke:#be185d,stroke-width:2px,color:#500724
+    classDef w fill:#fee2e2,stroke:#b91c1c,stroke-width:2px,color:#450a0a
+    class Sess s
+    class Resolve r
+    class Plugins p
+    class CacheTTL c
+    class PiAI ai
+    class Wire w
+      </div>
+    </div>
+
+    <h3>9.2 · Specialties</h3>
+    <ul>
+      <li><b>Provider plugins, not provider code.</b> Each provider is its own folder under <code>extensions/&lt;name&gt;/</code> with an <code>openclaw.plugin.json</code> manifest declaring auth choices, endpoint claims, capability contracts, model catalog, and per-model normalisation rules</li>
+      <li><b>Auth profile rotation + failover.</b> A single persona can list multiple auth profiles (e.g. 3 Anthropic API keys + 1 Claude Code OAuth). On 429 / 5xx, OpenClaw rotates to the next profile within the same provider and retries — no model swap, no context loss</li>
+      <li><b>Per-provider cache-TTL eligibility.</b> <code>isCacheTtlEligibleProvider(provider, modelId, modelApi)</code> in <code class="code-ref">src/agents/pi-embedded-runner/cache-ttl.ts</code> decides whether the session should emit <code>openclaw.cache-ttl</code> transcript markers. Currently: Anthropic family, Kilocode-routed Anthropic, Google/Gemini</li>
+      <li><b>Plugin-overridable eligibility.</b> A provider plugin can return a custom verdict via <code>resolveProviderCacheTtlEligibility()</code> — useful for self-hosted gateways</li>
+      <li><b>Deterministic prompt ordering for cache stability.</b> <code>AGENTS.md:47</code> mandates that maps / sets / plugin registries serialise in a stable order so the prompt prefix stays byte-identical across turns — keeps every provider's prefix cache warm</li>
+      <li><b>Provider plugins ship per-model normalisation</b> — e.g. the Anthropic plugin can rewrite <code>claude-3-opus</code> requests differently from <code>claude-sonnet-4-6</code> without touching pi-ai</li>
+      <li><b>OpenClaw can be its own MCP <i>server</i></b> — <code>openclaw mcp serve</code> exposes channel conversations as MCP tools to OTHER LLMs (Claude Code, Cursor, etc.), making the agent itself a context source</li>
+    </ul>
+
+    <h3>9.3 · Cache-TTL Eligibility Snippet</h3>
+<pre><code>// src/agents/pi-embedded-runner/cache-ttl.ts
+export function isCacheTtlEligibleProvider(
+  provider: string,
+  modelId: string,
+  modelApi?: string,
+): boolean {
+  const pluginEligibility = resolveProviderCacheTtlEligibility({...});
+  if (pluginEligibility !== undefined) return pluginEligibility;
+  return (
+    isAnthropicFamilyCacheTtlEligible({ provider, modelId, modelApi }) ||
+    (provider === "kilocode" &amp;&amp; isAnthropicModelRef(modelId)) ||
+    isGooglePromptCacheEligible({ modelApi, modelId })
+  );
+}</code></pre>
+    <p>Together with the deterministic ordering rule, this is OpenClaw's "operational layer above Pi-ai" — Pi handles the bytes-over-the-wire; OpenClaw handles which key to use, when to mark a cache boundary, and how to fail over when one provider misbehaves.</p>
+  </section>
+
+  <section>
+    <h2>10 · Strengths & Tradeoffs</h2>
     <div class="cards">
       <div class="card">
         <div class="icon">💪</div>
@@ -310,7 +369,7 @@ flowchart TB
   </section>
 
   <section>
-    <h2>10 · Further Reading</h2>
+    <h2>11 · Further Reading</h2>
     <ul>
       <li><a href="https://github.com/openclaw/openclaw">openclaw/openclaw</a></li>
       <li><a href="https://github.com/openclaw/openclaw/blob/main/docs/pi.md">OpenClaw's own Pi integration architecture doc</a></li>
