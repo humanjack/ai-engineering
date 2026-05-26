@@ -1,0 +1,45 @@
+%% paper/replicate.py — 7-step CLI and the parquet/JSON artifacts it threads together
+%% python -m adaptive_chunking.paper.replicate --steps chunking metrics raw_metrics analysis table3 rag
+graph LR
+    subgraph data["data/clair/ (shipped)"]
+        ADI[(adi_parsed/<br/>33 parsed JSON)]
+        MEN[(mentions/<br/>pre-computed coref)]
+    end
+
+    S1["1 · chunking<br/>8 methods + 2 post-proc passes"]
+    S2["2 · mentions<br/>maverick-coref (GPU)<br/>— skippable, pre-shipped"]
+    S3["3 · metrics<br/>5 metrics on post-processed chunks<br/>~9h local / ~30min Jina API"]
+    S4["4 · raw_metrics<br/>same metrics on RAW chunks<br/>(† baseline rows)"]
+    S5["5 · analysis<br/>Tables 1–2, Figure 1"]
+    S6["6 · table3<br/>local vs published, with Δ"]
+    S7["7 · rag<br/>QA-gen → hybrid retrieval →<br/>answer → LLM-judge (Tables 4–5)"]
+
+    ADI --> S1
+    S1 --> RAW[(chunks/raw)]
+    S1 --> NOS[(chunks/no_oversizing)]
+    S1 --> SM[(chunks/small_merged)]
+
+    ADI --> S2
+    S2 --> MEN
+
+    SM --> S3
+    MEN --> S3
+    S3 --> RES[(results/<br/>chunking_metrics.parquet)]
+
+    RAW --> S4
+    MEN --> S4
+    S4 --> RESR[(results_raw/)]
+
+    RES --> S5
+    SM --> S5
+    RES --> S6
+    RESR --> S6
+
+    SM --> S7
+    RES --> S7
+    S7 --> RAGOUT[(rag/<br/>retrieval + eval JSON)]
+
+    classDef store fill:#fff4e6,stroke:#d99500,color:#000
+    classDef opt fill:#eef2ff,stroke:#4338ca,color:#000
+    class ADI,MEN,RAW,NOS,SM,RES,RESR,RAGOUT store
+    class S2,S7 opt

@@ -1,0 +1,25 @@
+%% paper/replicate.run_rag + rag_utils + rag_eval — extrinsic validation (Tables 4–5)
+%% Compares Adaptive ("best") vs two fixed baselines on a generated QA set.
+sequenceDiagram
+    autonumber
+    participant Sel as analysis.output_best_chunks
+    participant QA as QA generation (GPT-4.1)
+    participant Idx as Haystack index
+    participant Ret as Hybrid retriever
+    participant Gen as Answer LLM
+    participant Judge as LLM judges (DeepEval)
+
+    Note over Sel: 3 chunk sets:<br/>best (adaptive) · langchain_default · page
+    Sel->>QA: parsed docs → 3 QA pairs/doc
+    QA-->>Idx: generated_qa_pairs.json (99 queries)
+
+    loop for each of the 3 chunk sets
+        Sel->>Idx: chunks → embed (Qwen3-Embedding-4B)
+        Idx->>Ret: document_store.json
+        Ret->>Ret: BM25 + dense → join → rerank<br/>(snowflake-arctic-embed-l-v2.0)
+        Ret->>Gen: top-k context per query
+        Gen->>Judge: answer ONLY from context
+        Judge->>Judge: Retrieval Completeness (0/1/2 → 0/.5/1)<br/>+ Answer Correctness
+    end
+
+    Note over Judge: Adaptive wins:<br/>Retrieval Completeness 67.7 vs 58.1 / 59.1<br/>Answer Correctness 78.0 vs 70.1 / 73.3<br/>(Wilcoxon p < 0.05)

@@ -1,0 +1,27 @@
+%% find_best_method() / output_best_chunks() — paper/analysis.py
+%% The "adaptive" decision is a per-document argmax over a weighted mean of metrics.
+graph TB
+    subgraph PerDoc["For ONE document: pivot metrics → score matrix"]
+        direction TB
+        Mtx["rows = metrics (RC,ICC,DCC,BI,SC)<br/>cols = chunking methods"]
+    end
+
+    Mtx --> W["weighted mean per column<br/>w = 0.2 each, NaN-skipping:<br/>score(m) = Σ w·s / Σ w over non-NaN"]
+    W --> Arg["argmax over methods<br/>(idxmax ignores NaN)"]
+    Arg --> Pick[[best_method for this doc]]
+
+    Pick --> Pull["pull that method's chunks<br/>from chunks.parquet, ordered"]
+    Pull --> Write[(write doc_name.json:<br/>method + ordered chunks)]
+
+    subgraph Fallback["no usable metrics?"]
+        FB["default_method = 'page'<br/>else first available method"]
+    end
+    Mtx -.all-NaN.-> FB --> Pull
+
+    note["Different docs → different winners.<br/>e.g. Doc1→our_recurs_1100,<br/>Doc2→llm_regex, Doc3→page"]
+    Pick -.-> note
+
+    classDef store fill:#fff4e6,stroke:#d99500,color:#000
+    classDef pick fill:#e8f5e9,stroke:#2e7d32,color:#000
+    class Write store
+    class Pick pick

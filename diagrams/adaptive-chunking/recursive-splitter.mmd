@@ -1,0 +1,39 @@
+%% RecursiveSplitter.split_text — split-then-merge (splitters.py)
+%% Phase A recursively descends a separator list until every piece fits chunk_size;
+%% Phase B re-assembles pieces under one of two merge policies.
+flowchart TB
+    Start([split_text&#40;text&#41;]) --> Rec
+
+    subgraph PhaseA["Phase A · _recursive_split — descend separators"]
+        direction TB
+        Rec{len&#40;text&#41; ≤<br/>chunk_size?}
+        Rec -->|yes| Keep[emit as one piece]
+        Rec -->|no| Sep[take next separator<br/>regex finditer, keep separator,<br/>attach to start]
+        Sep --> Big{piece still<br/>too big?}
+        Big -->|yes, more seps| Rec
+        Big -->|"yes, no seps left"| Bin["empty-separator case:<br/>BINARY SEARCH largest<br/>prefix ≤ chunk_size<br/>(hard split, never loses text)"]
+        Big -->|no| Keep
+    end
+
+    Keep --> Mode{merging<br/>mode?}
+    Bin --> Mode
+
+    subgraph PhaseB1["to_chunk_size — pack to ~chunk_size"]
+        direction TB
+        P1[greedily concatenate pieces<br/>until next would exceed chunk_size]
+        P1 --> O1["build overlap by backtracking<br/>chunk_overlap tokens;<br/>re-split an oversized tail piece<br/>if needed (min 50% overlap)"]
+    end
+
+    subgraph PhaseB2["small_only — keep semantic boundaries"]
+        direction TB
+        P2["only merge pieces < min_chunk_tokens<br/>into a neighbour (≤ chunk_size)"]
+        P2 --> O2[optional overlap rebuilt<br/>from constituent parts]
+    end
+
+    Mode -->|to_chunk_size| P1
+    Mode -->|small_only| P2
+    O1 --> Done([list of chunks])
+    O2 --> Done
+
+    classDef hot fill:#fff4e6,stroke:#d99500,color:#000
+    class Bin hot

@@ -1,0 +1,67 @@
+%% Adaptive Chunking — end-to-end data flow
+%% Core idea: chunk each document N ways, score each output with 5 intrinsic
+%% metrics, then pick the highest-scoring method PER DOCUMENT.
+graph TB
+    subgraph Input["Input"]
+        PDFs[(PDF / PPTX / Excel<br/>corpus)]
+        Text[Raw text<br/>already parsed]
+    end
+
+    subgraph Parse["1 · Parsing (parsing.py)"]
+        direction TB
+        Docling[DoclingParser<br/>default · open source]
+        PyMu[PyMuPDFParser<br/>lightweight]
+        Azure[AzureDIParser<br/>cloud]
+        Excel[ExcelParser]
+        Docling & PyMu & Azure & Excel --> ParsedJSON
+        ParsedJSON["Parsed-doc JSON contract<br/>full_text · pages · split_points · titles"]
+    end
+
+    subgraph Chunk["2 · Chunking — 8 methods (splitters.py + paper/splitters.py)"]
+        direction LR
+        M1[page]
+        M2[sentence]
+        M3[langchain recursive ×2]
+        M4[our recursive s=1100 / s=600]
+        M5[semantic]
+        M6[LLM regex]
+    end
+
+    subgraph Post["3 · Post-processing (postprocessing.py)"]
+        Over[split oversized<br/>> 1100 tok]
+        Small[merge tiny<br/>< 100 tok]
+        Gap{{"gap invariant:<br/>chunks must cover<br/>every char, no gaps"}}
+        Over --> Small --> Gap
+    end
+
+    subgraph Score["4 · Intrinsic metrics (metrics.py)"]
+        direction TB
+        SC[SC · size compliance]
+        ICC[ICC · intrachunk cohesion<br/>jina-embeddings-v3]
+        DCC[DCC · contextual coherence<br/>3000-tok sliding window]
+        BI[BI · block integrity<br/>vs parser split_points]
+        RC[RC · reference completeness<br/>coref entity↔pronoun pairs]
+    end
+
+    subgraph Select["5 · Adaptive selection (paper/analysis.py)"]
+        Matrix["score matrix<br/>method × metric, per doc"]
+        Best["find_best_method()<br/>weighted mean (0.2 each)<br/>→ argmax per document"]
+        Matrix --> Best
+    end
+
+    Out[(Optimal chunks<br/>per document<br/>best.json)]
+
+    PDFs --> Parse
+    Text -.skip parse.-> Chunk
+    ParsedJSON --> Chunk
+    M1 & M2 & M3 & M4 & M5 & M6 --> Post
+    Gap --> Score
+    SC & ICC & DCC & BI & RC --> Matrix
+    Best --> Out
+
+    classDef store fill:#fff4e6,stroke:#d99500,color:#000
+    classDef metric fill:#e8f5e9,stroke:#2e7d32,color:#000
+    classDef gate fill:#fce4ec,stroke:#c2185b,color:#000
+    class PDFs,Text,Out,ParsedJSON store
+    class SC,ICC,DCC,BI,RC metric
+    class Gap gate
